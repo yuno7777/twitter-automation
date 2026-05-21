@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Bot state & secrets
+.env
+bot/cookies.json
+bot/bot_state.json
+bot/bot_state.json.tmp
+bot/x_bot.log
+bot/debug_screenshots/
+bot/chrome_profile/
+
+# Node
+dashboard/node_modules/
+dashboard/.next/
+dashboard/.env.local
+dashboard/out/
+
+# Misc
+.DS_Store
+*.log

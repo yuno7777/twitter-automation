@@ -13,6 +13,10 @@ bot/x_bot.log
 bot/debug_screenshots/
 bot/chrome_profile/
 
+# Launcher runtime
+logs/
+.pids
+
 # Node
 dashboard/node_modules/
 dashboard/.next/

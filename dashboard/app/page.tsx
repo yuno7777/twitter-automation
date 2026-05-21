@@ -2,7 +2,7 @@
 
 import useSWR from "swr";
 import { useEffect, useState } from "react";
-import { Play, Pause, Square, MessageCircle, MessagesSquare, UserPlus, Cpu } from "lucide-react";
+import { Play, Pause, Square, MessageCircle, MessagesSquare, UserPlus, Cpu, Heart } from "lucide-react";
 import {
   controlBot,
   fetcher,
@@ -136,9 +136,10 @@ export default function OverviewPage() {
         </button>
       </section>
 
-      <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <section className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard icon={MessageCircle} label="Total Tweets" value={stats?.total_tweets ?? 0} />
         <StatCard icon={MessagesSquare} label="Total Replies" value={stats?.total_replies ?? 0} />
+        <StatCard icon={Heart} label="Total Likes" value={stats?.total_likes ?? 0} />
         <StatCard icon={UserPlus} label="Total Follows" value={stats?.total_follows ?? 0} />
         <StatCard icon={Cpu} label="LLM Calls Today" value={stats?.llm_calls_today ?? 0} />
       </section>

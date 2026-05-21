@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -173,6 +175,79 @@ def history_replies() -> list[dict[str, Any]]:
 @app.get("/api/history/follows")
 def history_follows() -> list[dict[str, Any]]:
     return read_state().get("follow_history", [])
+
+
+@app.get("/api/history/likes")
+def history_likes() -> list[dict[str, Any]]:
+    return read_state().get("like_history", [])
+
+
+def _parse_iso(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+@app.get("/api/analytics")
+def analytics(days: int = Query(14, ge=1, le=90)) -> dict[str, Any]:
+    """Aggregate history into daily series + hourly heatmap + top tweets."""
+    s = read_state()
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=days)
+
+    # Build day buckets (oldest -> newest)
+    day_keys: list[str] = []
+    for i in range(days - 1, -1, -1):
+        day_keys.append((now - timedelta(days=i)).strftime("%Y-%m-%d"))
+
+    daily: dict[str, dict[str, int]] = {
+        k: {"date": k, "tweets": 0, "replies": 0, "likes": 0, "follows": 0}
+        for k in day_keys
+    }
+    hourly = [0] * 24  # 24-hour activity heatmap (any action)
+
+    def bucket(items: list[dict[str, Any]], ts_key: str, action: str) -> None:
+        for it in items:
+            dt = _parse_iso(it.get(ts_key))
+            if not dt:
+                continue
+            if dt < cutoff:
+                continue
+            local = dt.astimezone()  # server local; matches PEAK_HOURS
+            key = local.strftime("%Y-%m-%d")
+            if key in daily:
+                daily[key][action] += 1
+            hourly[local.hour] += 1
+
+    bucket(s.get("tweet_history", []), "posted_at", "tweets")
+    bucket(s.get("reply_history", []), "posted_at", "replies")
+    bucket(s.get("like_history", []), "liked_at", "likes")
+    bucket(s.get("follow_history", []), "followed_at", "follows")
+
+    daily_series = [daily[k] for k in day_keys]
+
+    # Totals over the window
+    window_totals = {
+        "tweets": sum(d["tweets"] for d in daily_series),
+        "replies": sum(d["replies"] for d in daily_series),
+        "likes": sum(d["likes"] for d in daily_series),
+        "follows": sum(d["follows"] for d in daily_series),
+    }
+    busiest_day = max(daily_series, key=lambda d: d["tweets"] + d["replies"] + d["likes"] + d["follows"], default=None)
+
+    return {
+        "days": days,
+        "daily": daily_series,
+        "hourly": [{"hour": h, "count": c} for h, c in enumerate(hourly)],
+        "window_totals": window_totals,
+        "busiest_day": busiest_day["date"] if busiest_day else None,
+        "top_tweets": s.get("top_tweets", [])[:5],
+        "totals": s.get("stats", {}),
+        "cycles_run": s.get("stats", {}).get("cycles_run", 0),
+    }
 
 
 @app.get("/api/stats")

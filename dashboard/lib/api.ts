@@ -13,6 +13,7 @@ export interface StatsResponse {
   total_tweets: number;
   total_replies: number;
   total_follows: number;
+  total_likes?: number;
   llm_calls_today: number;
   cycles_run: number;
   status?: BotStatus;
@@ -94,6 +95,21 @@ export function getFollowHistory() {
 
 export function getLogs(lines = 200) {
   return json<{ lines: string[] }>(`/api/logs?lines=${lines}`);
+}
+
+export interface AnalyticsResponse {
+  days: number;
+  daily: { date: string; tweets: number; replies: number; likes: number; follows: number }[];
+  hourly: { hour: number; count: number }[];
+  window_totals: { tweets: number; replies: number; likes: number; follows: number };
+  busiest_day: string | null;
+  top_tweets: { text: string; likes: number }[];
+  totals: StatsResponse;
+  cycles_run: number;
+}
+
+export function getAnalytics(days = 14) {
+  return json<AnalyticsResponse>(`/api/analytics?days=${days}`);
 }
 
 export function getSettings() {

@@ -73,9 +73,15 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 CYCLE_INTERVAL_HOURS = 5
-MAX_POSTS_PER_CYCLE = 3
-MAX_REPLIES_PER_CYCLE = 1
-MAX_FOLLOWS_PER_CYCLE = 2
+MAX_POSTS_PER_CYCLE = int(os.getenv("MAX_POSTS_PER_CYCLE", "1"))
+MAX_REPLIES_PER_CYCLE = int(os.getenv("MAX_REPLIES_PER_CYCLE", "5"))
+MAX_FOLLOWS_PER_CYCLE = int(os.getenv("MAX_FOLLOWS_PER_CYCLE", "2"))
+MAX_LIKES_PER_CYCLE = int(os.getenv("MAX_LIKES_PER_CYCLE", "10"))
+
+NICHE = os.getenv("NICHE", "AI, automation, and tech").strip()
+X_HANDLE = os.getenv("X_HANDLE", "").strip().lstrip("@")
+PEAK_HOURS_RAW = os.getenv("PEAK_HOURS", "").strip()
+PEAK_HOURS = [int(h) for h in PEAK_HOURS_RAW.split(",") if h.strip().isdigit()] if PEAK_HOURS_RAW else []
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -121,7 +127,15 @@ SELECTORS = {
     "like_btn": '[data-testid="like"]',
     "user_cell": '[data-testid="UserCell"]',
     "ad_marker": '[data-testid="placementTracking"]',
+    "thread_add_btn": '[data-testid="addButton"]',
 }
+
+
+def in_peak_hour() -> bool:
+    """True if PEAK_HOURS is unset, or current local hour is in PEAK_HOURS."""
+    if not PEAK_HOURS:
+        return True
+    return datetime.now().hour in PEAK_HOURS
 
 # ---------------------------------------------------------------------------
 # State management
@@ -133,14 +147,18 @@ DEFAULT_STATE: dict[str, Any] = {
     "next_cycle_at": None,
     "processed_links": [],
     "replied_tweet_ids": [],
+    "liked_tweet_ids": [],
     "followed_usernames": [],
     "tweet_history": [],
     "reply_history": [],
     "follow_history": [],
+    "like_history": [],
+    "top_tweets": [],            # populated by self-engagement scrape
     "stats": {
         "total_tweets": 0,
         "total_replies": 0,
         "total_follows": 0,
+        "total_likes": 0,
         "llm_calls_today": 0,
         "cycles_run": 0,
     },
@@ -279,6 +297,39 @@ async def call_llm(user_prompt: str, system_prompt: str, state: dict[str, Any]) 
 def load_prompt(name: str) -> str:
     path = PROMPTS_DIR / f"{name}.txt"
     return path.read_text(encoding="utf-8")
+
+
+def load_style_notes() -> str:
+    try:
+        return (PROMPTS_DIR / "style_notes.txt").read_text(encoding="utf-8").strip()
+    except Exception:
+        return "(none provided)"
+
+
+def format_top_tweets(state: dict[str, Any], n: int = 3) -> str:
+    top = state.get("top_tweets") or []
+    if not top:
+        return "(no engagement data yet)"
+    lines = []
+    for t in top[:n]:
+        likes = t.get("likes", 0)
+        text = (t.get("text") or "").replace("\n", " ")[:200]
+        lines.append(f"- ({likes} likes) {text}")
+    return "\n".join(lines)
+
+
+def split_thread(text: str) -> list[str]:
+    """Split LLM output on lines containing only '---' into a list of tweets."""
+    parts = re.split(r"^\s*-{3,}\s*$", text, flags=re.MULTILINE)
+    tweets = [strip_markdown(p).strip().strip('"').strip("'") for p in parts]
+    tweets = [t for t in tweets if t]
+    # Truncate each
+    out = []
+    for t in tweets[:3]:
+        if len(t) > 280:
+            t = t[:277].rstrip() + "..."
+        out.append(t)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -538,27 +589,32 @@ def strip_markdown(text: str) -> str:
 # Tweet generation
 # ---------------------------------------------------------------------------
 
-async def generate_tweet(item: NewsItem, state: dict[str, Any]) -> str | None:
+async def generate_thread(item: NewsItem, state: dict[str, Any]) -> list[str]:
+    """Returns 1-3 tweets as a list. Empty list on failure."""
     template = load_prompt("tweet_prompt")
     user_prompt = template.format(
+        niche=NICHE,
+        style_notes=load_style_notes(),
+        top_tweets=format_top_tweets(state),
         title=item.title,
         summary=item.summary,
         source=item.source,
         link=item.link,
     )
-    text = await call_llm(user_prompt, "You write elite high-engagement X tweets.", state)
+    text = await call_llm(user_prompt, "You write sharp, opinionated X posts that grow accounts.", state)
     if not text:
-        return None
-    text = strip_markdown(text).strip('"').strip("'")
-    if len(text) > 280:
-        text = text[:277].rstrip() + "..."
-    return text
+        return []
+    return split_thread(text)
 
 
 async def generate_reply(tweet_text: str, state: dict[str, Any]) -> str | None:
     template = load_prompt("reply_prompt")
-    user_prompt = template.format(tweet_text=tweet_text)
-    text = await call_llm(user_prompt, "You write thoughtful X replies.", state)
+    user_prompt = template.format(
+        niche=NICHE,
+        style_notes=load_style_notes(),
+        tweet_text=tweet_text,
+    )
+    text = await call_llm(user_prompt, "You write replies that add real signal.", state)
     if not text:
         return None
     text = strip_markdown(text).strip('"').strip("'")
@@ -585,8 +641,16 @@ async def selector_health_check(page: Page) -> bool:
 
 
 async def post_tweet(page: Page, text: str) -> bool:
+    return await post_thread(page, [text])
+
+
+async def post_thread(page: Page, tweets: list[str]) -> bool:
+    """Post 1-N tweets as a single thread using X's native + button."""
+    if not tweets:
+        return False
     if DRY_RUN:
-        logger.info(f"[DRY_RUN] Would post tweet: {text[:80]}...")
+        for i, t in enumerate(tweets):
+            logger.info(f"[DRY_RUN] Would post thread tweet {i+1}/{len(tweets)}: {t[:80]}")
         return True
 
     try:
@@ -594,7 +658,7 @@ async def post_tweet(page: Page, text: str) -> bool:
         await jitter(2, 5)
         await random_mouse_move(page)
 
-        # Scroll a bit to simulate reading
+        # Light scroll to look human
         for _ in range(random.randint(1, 3)):
             await page.mouse.wheel(0, random.randint(300, 700))
             await jitter(1, 3)
@@ -602,10 +666,20 @@ async def post_tweet(page: Page, text: str) -> bool:
         await page.click(SELECTORS["compose_tweet_btn"], timeout=10000)
         await jitter(1, 2)
         await page.wait_for_selector(SELECTORS["tweet_textarea"], timeout=10000)
-        await human_type(page, SELECTORS["tweet_textarea"], text)
-        await jitter(1, 3)
 
-        # Try modal submit first, then inline
+        for i, t in enumerate(tweets):
+            sel = f'[data-testid="tweetTextarea_{i}"]'
+            await human_type(page, sel, t)
+            await jitter(1, 3)
+            if i < len(tweets) - 1:
+                # Add next tweet to thread
+                try:
+                    await page.click(SELECTORS["thread_add_btn"], timeout=4000)
+                    await jitter(0.8, 1.6)
+                except Exception as e:
+                    logger.warning(f"Add-thread button failed at tweet {i+1}: {e}. Submitting what we have.")
+                    break
+
         clicked = False
         for sel in (SELECTORS["tweet_submit_btn"], SELECTORS["tweet_submit_btn_modal"]):
             try:
@@ -618,7 +692,7 @@ async def post_tweet(page: Page, text: str) -> bool:
             raise RuntimeError("Could not find tweet submit button.")
 
         await jitter(3, 6)
-        logger.info(f"Posted tweet: {text[:60]}...")
+        logger.info(f"Posted thread of {len(tweets)} tweet(s). First: {tweets[0][:60]}")
         return True
     except Exception as e:
         ts = int(time.time())
@@ -627,8 +701,120 @@ async def post_tweet(page: Page, text: str) -> bool:
             await page.screenshot(path=str(path))
         except Exception:
             pass
-        logger.warning(f"Tweet post failed: {e}. Screenshot: {path}")
+        logger.warning(f"Thread post failed: {e}. Screenshot: {path}")
         return False
+
+
+# ---------------------------------------------------------------------------
+# Likes — high-frequency, low-risk engagement
+# ---------------------------------------------------------------------------
+
+LIKE_SEARCH_QUERIES = [
+    "AI agents",
+    "Claude AI",
+    "n8n workflow",
+    "LLM tools",
+    "AI automation",
+    "agentic",
+    "AI startup",
+]
+
+
+async def like_recent_tweets(page: Page, state: dict[str, Any], max_likes: int) -> int:
+    """Search niche, like fresh tweets. Returns count of successful likes."""
+    if max_likes <= 0:
+        return 0
+    query = random.choice(LIKE_SEARCH_QUERIES)
+    url = f"https://x.com/search?q={quote_plus(query)}&f=live"
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await jitter(3, 5)
+        await page.wait_for_selector(SELECTORS["tweet_card"], timeout=15000)
+    except Exception as e:
+        logger.warning(f"Like search failed for '{query}': {e}")
+        return 0
+
+    cards = await page.query_selector_all(SELECTORS["tweet_card"])
+    liked = 0
+    for card in cards[:25]:
+        if liked >= max_likes:
+            break
+        try:
+            link_el = await card.query_selector('a[href*="/status/"]')
+            href = await link_el.get_attribute("href") if link_el else None
+            if not href:
+                continue
+            tweet_url = "https://x.com" + href if href.startswith("/") else href
+            if tweet_url in state["liked_tweet_ids"]:
+                continue
+
+            like_btn = await card.query_selector(SELECTORS["like_btn"])
+            if not like_btn:
+                continue
+            aria = (await like_btn.get_attribute("aria-label")) or ""
+            # Skip already-liked tweets
+            if "Liked" in aria or "Unlike" in aria:
+                continue
+
+            if DRY_RUN:
+                logger.info(f"[DRY_RUN] Would like {tweet_url}")
+            else:
+                await like_btn.scroll_into_view_if_needed()
+                await jitter(0.4, 1.0)
+                await like_btn.click()
+                await jitter(0.8, 2.2)
+
+            state["liked_tweet_ids"].append(tweet_url)
+            state["like_history"].insert(0, {
+                "tweet_url": tweet_url,
+                "liked_at": datetime.now(timezone.utc).isoformat(),
+            })
+            state["like_history"] = state["like_history"][:200]
+            state["liked_tweet_ids"] = state["liked_tweet_ids"][-1000:]
+            state["stats"]["total_likes"] = state["stats"].get("total_likes", 0) + 1
+            liked += 1
+            save_state(state)
+        except Exception as e:
+            logger.debug(f"Skip like card: {e}")
+    logger.info(f"Liked {liked} tweets for query '{query}'")
+    return liked
+
+
+# ---------------------------------------------------------------------------
+# Self-engagement scrape — read own profile, find top-performing tweets
+# ---------------------------------------------------------------------------
+
+async def scrape_own_top_tweets(page: Page, state: dict[str, Any]) -> None:
+    """Visit own profile, scrape recent tweets + like counts, store top 5 in state.top_tweets."""
+    if not X_HANDLE:
+        return
+    try:
+        await page.goto(f"https://x.com/{X_HANDLE}", wait_until="domcontentloaded", timeout=30000)
+        await jitter(2, 4)
+        await page.wait_for_selector(SELECTORS["tweet_card"], timeout=10000)
+        # Scroll to load more
+        for _ in range(3):
+            await page.mouse.wheel(0, random.randint(500, 900))
+            await jitter(1, 2)
+        cards = await page.query_selector_all(SELECTORS["tweet_card"])
+        scraped: list[dict[str, Any]] = []
+        for card in cards[:20]:
+            try:
+                text_el = await card.query_selector(SELECTORS["tweet_text"])
+                text = (await text_el.inner_text()) if text_el else ""
+                if not text:
+                    continue
+                like_el = await card.query_selector(f'{SELECTORS["like_btn"]} span')
+                likes = _parse_count((await like_el.inner_text()).strip()) if like_el else 0
+                scraped.append({"text": text, "likes": likes})
+            except Exception:
+                continue
+        scraped.sort(key=lambda x: x["likes"], reverse=True)
+        state["top_tweets"] = scraped[:5]
+        save_state(state)
+        logger.info(f"Self-engagement: top tweet has {scraped[0]['likes'] if scraped else 0} likes")
+    except Exception as e:
+        logger.warning(f"Self-engagement scrape failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +826,7 @@ class TweetCandidate:
     url: str
     text: str
     likes: int
+    age_minutes: int = 9999
     element_handle: Any = None
 
 
@@ -686,8 +873,21 @@ async def discover_reply_candidates(page: Page, query: str) -> list[TweetCandida
             likes_text = (await like_el.inner_text()).strip() if like_el else "0"
             likes = _parse_count(likes_text)
 
+            # Age from <time datetime="...">
+            time_el = await card.query_selector("time")
+            age_min = 9999
+            if time_el:
+                dt_attr = await time_el.get_attribute("datetime")
+                if dt_attr:
+                    try:
+                        posted = datetime.fromisoformat(dt_attr.replace("Z", "+00:00"))
+                        age_min = int((datetime.now(timezone.utc) - posted).total_seconds() / 60)
+                    except Exception:
+                        pass
+
             candidates.append(TweetCandidate(
-                url=tweet_url, text=text, likes=likes, element_handle=card
+                url=tweet_url, text=text, likes=likes,
+                age_minutes=age_min, element_handle=card,
             ))
         except Exception as e:
             logger.debug(f"Skipping a card: {e}")
@@ -840,6 +1040,11 @@ async def run_cycle(state: dict[str, Any]) -> None:
     posts_made = 0
     replies_made = 0
     follows_made = 0
+    likes_made = 0
+
+    is_peak = in_peak_hour()
+    if not is_peak:
+        logger.info(f"Off-peak hour ({datetime.now().hour}) — posting suppressed, engagement only.")
 
     async with async_playwright() as p:
         browser, context = await launch_browser(p, headless=HEADLESS)
@@ -851,88 +1056,123 @@ async def run_cycle(state: dict[str, Any]) -> None:
             if not await respect_control(state):
                 return
 
-            # Health check
             set_action(state, "Selector health check")
             ok = await selector_health_check(page)
             if not ok:
-                logger.warning("UI health check failed — skipping posting this cycle.")
+                logger.warning("UI health check failed — skipping all actions this cycle.")
+                return
 
-            # --- Posts ---
-            set_action(state, "Fetching news")
-            news = fetch_news(state)
-            news_to_post = news[:MAX_POSTS_PER_CYCLE]
+            # Self-engagement scrape (drives top-tweet feedback into next prompt)
+            set_action(state, "Scraping own engagement")
+            await scrape_own_top_tweets(page, state)
+            await jitter(2, 5)
 
-            for i, item in enumerate(news_to_post):
-                if posts_made >= MAX_POSTS_PER_CYCLE:
-                    break
-                if not await respect_control(state):
-                    return
+            # --- Likes first (low-risk, warms the algo signal) ---
+            if MAX_LIKES_PER_CYCLE > 0:
+                set_action(state, "Liking niche tweets")
+                likes_made = await like_recent_tweets(page, state, MAX_LIKES_PER_CYCLE)
+                await jitter(5, 12)
 
-                set_action(state, f"Generating tweet {i+1}/{len(news_to_post)}")
-                tweet = await generate_tweet(item, state)
-                if not tweet:
-                    logger.warning("Tweet generation returned None — skipping.")
+            # --- Posts (skip entirely off-peak) ---
+            if is_peak and MAX_POSTS_PER_CYCLE > 0:
+                set_action(state, "Fetching news")
+                news = fetch_news(state)
+                news_to_post = news[:MAX_POSTS_PER_CYCLE]
+
+                for i, item in enumerate(news_to_post):
+                    if posts_made >= MAX_POSTS_PER_CYCLE:
+                        break
+                    if not await respect_control(state):
+                        return
+
+                    set_action(state, f"Generating thread {i+1}/{len(news_to_post)}")
+                    thread = await generate_thread(item, state)
+                    if not thread:
+                        logger.warning("Thread generation returned empty — skipping.")
+                        state["processed_links"].append(item.link)
+                        save_state(state)
+                        continue
+
+                    set_action(state, f"Posting thread {i+1} ({len(thread)} tweet(s))")
+                    if await post_thread(page, thread):
+                        posts_made += 1
+                        state["stats"]["total_tweets"] += 1
+                        state["tweet_history"].insert(0, {
+                            "text": "\n---\n".join(thread),
+                            "posted_at": datetime.now(timezone.utc).isoformat(),
+                            "news_title": item.title,
+                            "news_link": item.link,
+                            "thread_length": len(thread),
+                        })
+                        state["tweet_history"] = state["tweet_history"][:200]
+
                     state["processed_links"].append(item.link)
+                    state["processed_links"] = state["processed_links"][-500:]
                     save_state(state)
-                    continue
 
-                set_action(state, f"Posting tweet {i+1}")
-                if ok and await post_tweet(page, tweet):
-                    posts_made += 1
-                    state["stats"]["total_tweets"] += 1
-                    state["tweet_history"].insert(0, {
-                        "text": tweet,
-                        "posted_at": datetime.now(timezone.utc).isoformat(),
-                        "news_title": item.title,
-                        "news_link": item.link,
-                    })
-                    state["tweet_history"] = state["tweet_history"][:200]
+                    if i < len(news_to_post) - 1 and posts_made < MAX_POSTS_PER_CYCLE:
+                        await long_wait(12, 35, state, "Spacing between posts")
 
-                state["processed_links"].append(item.link)
-                state["processed_links"] = state["processed_links"][-500:]
-                save_state(state)
-
-                # Spacing between posts
-                if i < len(news_to_post) - 1 and posts_made < MAX_POSTS_PER_CYCLE:
-                    await long_wait(12, 35, state, "Spacing between posts")
-
-            # --- Reply ---
-            if replies_made < MAX_REPLIES_PER_CYCLE and ok:
+            # --- Replies (highest growth lever — do many) ---
+            if MAX_REPLIES_PER_CYCLE > 0:
                 if not await respect_control(state):
                     return
-                await long_wait(15, 40, state, "Cooldown before reply discovery")
+                # Shorter cooldown for first reply, then space them out
+                await long_wait(3, 8, state, "Pre-reply pause")
 
-                query = random.choice(REPLY_SEARCH_QUERIES)
-                set_action(state, f"Searching replies for '{query}'")
-                cands = await discover_reply_candidates(page, query)
-                cands = [
-                    c for c in cands
-                    if c.likes >= 2 and c.url not in state["replied_tweet_ids"]
-                ]
-                if cands:
-                    best = max(cands, key=lambda x: x.likes)
-                    set_action(state, "Generating reply")
+                used_queries: set[str] = set()
+                for r_idx in range(MAX_REPLIES_PER_CYCLE):
+                    if not await respect_control(state):
+                        return
+                    # Pick a query we haven't used this cycle
+                    available = [q for q in REPLY_SEARCH_QUERIES if q not in used_queries]
+                    if not available:
+                        available = REPLY_SEARCH_QUERIES
+                    query = random.choice(available)
+                    used_queries.add(query)
+
+                    set_action(state, f"Reply {r_idx+1}/{MAX_REPLIES_PER_CYCLE}: searching '{query}'")
+                    cands = await discover_reply_candidates(page, query)
+                    # Filter: fresh (under 90 min), rising (5-500 likes — avoid mega-viral), not replied
+                    cands = [
+                        c for c in cands
+                        if 5 <= c.likes <= 500
+                        and c.age_minutes <= 90
+                        and c.url not in state["replied_tweet_ids"]
+                    ]
+                    if not cands:
+                        logger.info(f"No fresh reply candidates for '{query}'.")
+                        continue
+
+                    # Pick one of the top 3 randomly (variety)
+                    cands.sort(key=lambda x: x.likes, reverse=True)
+                    best = random.choice(cands[:3])
+
+                    set_action(state, f"Generating reply {r_idx+1}")
                     reply = await generate_reply(best.text, state)
-                    if reply:
-                        set_action(state, "Posting reply")
-                        if await post_reply(page, best, reply):
-                            replies_made += 1
-                            state["stats"]["total_replies"] += 1
-                            state["replied_tweet_ids"].append(best.url)
-                            state["replied_tweet_ids"] = state["replied_tweet_ids"][-500:]
-                            state["reply_history"].insert(0, {
-                                "reply_text": reply,
-                                "original_tweet_url": best.url,
-                                "original_tweet_text": best.text[:200],
-                                "posted_at": datetime.now(timezone.utc).isoformat(),
-                            })
-                            state["reply_history"] = state["reply_history"][:200]
-                            save_state(state)
-                else:
-                    logger.info(f"No suitable reply candidates for '{query}'.")
+                    if not reply:
+                        continue
+
+                    set_action(state, f"Posting reply {r_idx+1}")
+                    if await post_reply(page, best, reply):
+                        replies_made += 1
+                        state["stats"]["total_replies"] += 1
+                        state["replied_tweet_ids"].append(best.url)
+                        state["replied_tweet_ids"] = state["replied_tweet_ids"][-500:]
+                        state["reply_history"].insert(0, {
+                            "reply_text": reply,
+                            "original_tweet_url": best.url,
+                            "original_tweet_text": best.text[:200],
+                            "posted_at": datetime.now(timezone.utc).isoformat(),
+                        })
+                        state["reply_history"] = state["reply_history"][:200]
+                        save_state(state)
+
+                    if r_idx < MAX_REPLIES_PER_CYCLE - 1:
+                        await long_wait(8, 18, state, "Spacing between replies")
 
             # --- Follow ---
-            if follows_made < MAX_FOLLOWS_PER_CYCLE and ok:
+            if follows_made < MAX_FOLLOWS_PER_CYCLE:
                 if not await respect_control(state):
                     return
                 await long_wait(25, 60, state, "Cooldown before follow discovery")
@@ -963,11 +1203,11 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         break
                     await long_wait(20, 30, state, "Spacing between follows")
 
-            # Cycle summary
             logger.info(
                 f"Cycle complete. Posts: {posts_made} | Replies: {replies_made} | "
-                f"Follows: {follows_made} | LLM calls: {state['stats']['llm_calls_today']} | "
-                f"Next cycle in ~{CYCLE_INTERVAL_HOURS} hours"
+                f"Likes: {likes_made} | Follows: {follows_made} | "
+                f"LLM calls: {state['stats']['llm_calls_today']} | "
+                f"Peak hour: {is_peak} | Next cycle in ~{CYCLE_INTERVAL_HOURS}h"
             )
 
         finally:

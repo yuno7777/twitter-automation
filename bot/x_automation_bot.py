@@ -98,13 +98,18 @@ RSS_FEEDS = [
 ]
 
 REPLY_SEARCH_QUERIES = [
-    "AI automation tools",
-    "agentic AI",
-    "LLM workflow",
-    "AI SaaS founders",
-    "machine learning engineers",
-    "AI agents 2025",
-    "Claude Gemini GPT",
+    "AI agents",
+    "Claude AI",
+    "Cursor AI",
+    "LLM",
+    "n8n",
+    "AI tools",
+    "indie hacker",
+    "shipping AI",
+    "vibe coding",
+    "AI startup",
+    "RAG",
+    "AI workflow",
 ]
 
 FOLLOW_SEARCH_QUERIES = [
@@ -833,11 +838,25 @@ class TweetCandidate:
 async def discover_reply_candidates(page: Page, query: str) -> list[TweetCandidate]:
     url = f"https://x.com/search?q={quote_plus(query)}&f=live"
     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await jitter(3, 6)
+    await jitter(4, 8)  # longer settle — X's React tree takes a beat
     try:
-        await page.wait_for_selector(SELECTORS["tweet_card"], timeout=15000)
+        await page.wait_for_selector(SELECTORS["tweet_card"], timeout=20000)
     except Exception as e:
-        logger.warning(f"No tweets loaded for query '{query}': {e}")
+        # Detect throttle/error pages and screenshot for debugging
+        body_text = ""
+        try:
+            body_text = (await page.inner_text("body"))[:500]
+        except Exception:
+            pass
+        if any(s in body_text for s in ("Something went wrong", "Try reloading", "Rate limit")):
+            logger.warning(f"X showed an error page for '{query}' — likely throttled. Cooling down.")
+            await jitter(30, 60)
+        else:
+            logger.warning(f"No tweets loaded for query '{query}': {e}")
+        try:
+            await page.screenshot(path=str(SCREENSHOT_DIR / f"search_empty_{int(time.time())}.png"))
+        except Exception:
+            pass
         return []
 
     # Scroll a bit to load more
@@ -1052,7 +1071,7 @@ async def run_cycle(state: dict[str, Any]) -> None:
 
         try:
             set_action(state, "Initial human-like delay")
-            await long_wait(3, 10, state, "Initial wake-up delay")
+            await long_wait(1, 4, state, "Initial wake-up delay")
             if not await respect_control(state):
                 return
 
@@ -1071,7 +1090,7 @@ async def run_cycle(state: dict[str, Any]) -> None:
             if MAX_LIKES_PER_CYCLE > 0:
                 set_action(state, "Liking niche tweets")
                 likes_made = await like_recent_tweets(page, state, MAX_LIKES_PER_CYCLE)
-                await jitter(5, 12)
+                await long_wait(10, 12, state, "Cooldown after likes")
 
             # --- Posts (skip entirely off-peak) ---
             if is_peak and MAX_POSTS_PER_CYCLE > 0:
@@ -1111,14 +1130,14 @@ async def run_cycle(state: dict[str, Any]) -> None:
                     save_state(state)
 
                     if i < len(news_to_post) - 1 and posts_made < MAX_POSTS_PER_CYCLE:
-                        await long_wait(12, 35, state, "Spacing between posts")
+                        await long_wait(10, 12, state, "Spacing between posts")
 
             # --- Replies (highest growth lever — do many) ---
             if MAX_REPLIES_PER_CYCLE > 0:
                 if not await respect_control(state):
                     return
                 # Shorter cooldown for first reply, then space them out
-                await long_wait(3, 8, state, "Pre-reply pause")
+                await long_wait(10, 12, state, "Pre-reply pause")
 
                 used_queries: set[str] = set()
                 for r_idx in range(MAX_REPLIES_PER_CYCLE):
@@ -1169,13 +1188,13 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         save_state(state)
 
                     if r_idx < MAX_REPLIES_PER_CYCLE - 1:
-                        await long_wait(8, 18, state, "Spacing between replies")
+                        await long_wait(10, 12, state, "Spacing between replies")
 
             # --- Follow ---
             if follows_made < MAX_FOLLOWS_PER_CYCLE:
                 if not await respect_control(state):
                     return
-                await long_wait(25, 60, state, "Cooldown before follow discovery")
+                await long_wait(10, 12, state, "Cooldown before follow discovery")
 
                 query = random.choice(FOLLOW_SEARCH_QUERIES)
                 set_action(state, f"Searching users for '{query}'")
@@ -1201,7 +1220,7 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         save_state(state)
                     if follows_made >= MAX_FOLLOWS_PER_CYCLE:
                         break
-                    await long_wait(20, 30, state, "Spacing between follows")
+                    await long_wait(10, 12, state, "Spacing between follows")
 
             logger.info(
                 f"Cycle complete. Posts: {posts_made} | Replies: {replies_made} | "

@@ -17,6 +17,12 @@ bot/chrome_profile/
 logs/
 .pids
 
+# Graphify generated output (regenerated per machine on /graphify .)
+graphify-out/
+
+# Per-user CLI session state
+.antigravitycli/
+
 # Node
 dashboard/node_modules/
 dashboard/.next/

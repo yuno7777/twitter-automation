@@ -348,41 +348,54 @@ CRITICAL OUTPUT FORMAT
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
-    """LLMs sometimes wrap JSON in code fences, add comments, or leave trailing commas.
-    Be tolerant: strip fences, drop // and /* */ comments, remove trailing commas, retry."""
+    """3-pass JSON extraction for messy LLM output.
+
+    Pass 1 — stdlib lenient (strict=False, handles control chars in strings).
+    Pass 2 — manual cleanup (strip fences/comments/trailing commas/smart quotes).
+    Pass 3 — json-repair library (fixes missing commas, unbalanced brackets,
+             unescaped quotes inside strings, truncation, etc.).
+    """
     if not text:
         return None
-    # Strip code fences
     text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
     text = re.sub(r"```\s*$", "", text.strip())
     start = text.find("{")
     end = text.rfind("}")
     if start < 0 or end < 0 or end <= start:
-        return None
-    blob = text[start:end + 1]
+        # Maybe truncated — still try repair on what we have
+        blob = text
+    else:
+        blob = text[start:end + 1]
 
-    # Pass 1: strict — strips control chars too if any leaked
+    # Pass 1: stdlib lenient
     try:
         return json.loads(blob, strict=False)
     except Exception:
         pass
 
-    # Pass 2: aggressive cleanup
+    # Pass 2: manual cleanup
     cleaned = blob
-    # Strip // line comments and /* block comments
     cleaned = re.sub(r"//[^\n\r]*", "", cleaned)
     cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
-    # Drop trailing commas before } or ]
     cleaned = re.sub(r",(\s*[}\]])", r"\1", cleaned)
-    # Smart quotes → regular quotes
     cleaned = cleaned.replace("“", '"').replace("”", '"').replace("’", "'")
     try:
-        # strict=False allows literal control chars (\n, \t) inside string values
         return json.loads(cleaned, strict=False)
+    except Exception:
+        pass
+
+    # Pass 3: json-repair (handles missing commas, unbalanced brackets, etc.)
+    try:
+        import json_repair
+        result = json_repair.loads(cleaned)
+        if isinstance(result, dict) and result:
+            logger.info("Strategy JSON recovered via json-repair (pass 3).")
+            return result
     except Exception as e:
-        logger.warning(f"Strategy JSON parse failed even after cleanup: {e}")
-        logger.debug(f"JSON snippet near failure: {cleaned[:300]}")
-        return None
+        logger.warning(f"Strategy JSON unrecoverable: {e}")
+        logger.debug(f"JSON snippet: {cleaned[:300]}")
+
+    return None
 
 
 def _default_strategy() -> dict[str, Any]:

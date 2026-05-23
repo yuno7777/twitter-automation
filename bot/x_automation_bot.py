@@ -36,6 +36,7 @@ from dotenv import load_dotenv
 from playwright.async_api import BrowserContext, Page, async_playwright
 
 import intelligence
+import creator_intel
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -86,6 +87,12 @@ NICHE = os.getenv("NICHE", "AI, automation, and tech").strip()
 X_HANDLE = os.getenv("X_HANDLE", "").strip().lstrip("@")
 PEAK_HOURS_RAW = os.getenv("PEAK_HOURS", "").strip()
 PEAK_HOURS = [int(h) for h in PEAK_HOURS_RAW.split(",") if h.strip().isdigit()] if PEAK_HOURS_RAW else []
+
+# Curated creators in your niche — bot scrapes their top tweets each cycle for style reference.
+CREATORS_TO_STUDY = [
+    h.strip().lstrip("@") for h in os.getenv("CREATORS_TO_STUDY", "").split(",")
+    if h.strip()
+]
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -757,10 +764,14 @@ async def _gate_with_critic(
 async def generate_thread(item: NewsItem, state: dict[str, Any]) -> list[str]:
     """Returns 1-3 tweets as a list. Empty list on failure."""
     template = load_prompt("tweet_prompt")
+    mode_name, mode_instructions = creator_intel.pick_style_mode()
     user_prompt = template.format(
         niche=NICHE,
         style_notes=load_style_notes(),
+        creator_examples=creator_intel.format_creator_examples(state),
         top_tweets=format_top_tweets(state),
+        style_mode_name=mode_name,
+        style_mode_instructions=mode_instructions,
         title=item.title,
         summary=item.summary,
         source=item.source,
@@ -775,10 +786,14 @@ async def generate_thread(item: NewsItem, state: dict[str, Any]) -> list[str]:
 async def generate_trend_thread(topic: dict[str, Any], state: dict[str, Any]) -> list[str]:
     """Turn a strategy tweet_topic (from real GitHub/HN signal) into a 1-3 tweet thread."""
     template = load_prompt("trend_tweet_prompt")
+    mode_name, mode_instructions = creator_intel.pick_style_mode()
     user_prompt = template.format(
         niche=NICHE,
         style_notes=load_style_notes(),
+        creator_examples=creator_intel.format_creator_examples(state),
         top_tweets=format_top_tweets(state),
+        style_mode_name=mode_name,
+        style_mode_instructions=mode_instructions,
         angle=topic.get("angle", ""),
         context=topic.get("context", ""),
         source_url=topic.get("source_url", ""),
@@ -1508,6 +1523,18 @@ async def run_cycle(state: dict[str, Any]) -> None:
             set_action(state, "Scraping own engagement")
             await scrape_own_top_tweets(page, state)
             await jitter(2, 5)
+
+            # Creator intel — port from x-ai. Scrapes tracked creators' top tweets
+            # so the LLM has real "what's working in this niche right now" examples.
+            if CREATORS_TO_STUDY:
+                set_action(state, "Scraping tracked creators for style reference")
+                try:
+                    await creator_intel.gather_creator_intel(
+                        page, CREATORS_TO_STUDY, state, per_creator=5,
+                    )
+                except Exception as e:
+                    logger.warning(f"Creator intel scrape failed (non-fatal): {e}")
+                await jitter(2, 5)
 
             # --- LLM strategy synthesis (the brain) ---
             set_action(state, "Researching trends + synthesizing strategy")

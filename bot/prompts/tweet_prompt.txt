@@ -5,22 +5,28 @@ NICHE: {niche}
 VOICE & STYLE NOTES:
 {style_notes}
 
-RECENT HIGH-PERFORMERS (for reference, write more like these):
+WHAT'S WORKING IN THIS NICHE RIGHT NOW (top tweets from tracked creators):
+{creator_examples}
+
+YOUR RECENT PERFORMERS:
 {top_tweets}
+
+STYLE MODE FOR THIS TWEET: {style_mode_name}
+{style_mode_instructions}
 
 TASK
 Transform this news into a SHORT THREAD of 1 to 3 tweets. One tweet is fine if the news is small — only use 2-3 tweets if there's genuinely more to unpack. Most outputs should be 1 tweet.
 
 Rules:
 - Each tweet under 280 characters.
-- Tweet 1: A hook — bold claim, surprising fact, sharp take, or pointed question. No throat-clearing. No "Just in:". No "BREAKING:".
+- Tweet 1: hook matching the STYLE MODE above. No throat-clearing. No "Just in:". No "BREAKING:".
 - Tweets 2-3 (if used): unfold the insight. Each one should stand on its own as readable.
-- ZERO hashtags. The X algorithm penalizes hashtag spam in 2026. Just write good prose.
-- 0-2 emojis MAX across the whole thread. Often zero is better.
-- Banned words: groundbreaking, revolutionary, game-changing, unlock, leverage, harness, dive deep, deep dive, in the era of, paradigm, elite, supercharge. These are corporate slop.
-- Tone: confident, curious, slightly opinionated. Talk like a smart friend, not a press release.
+- ZERO hashtags. The X algorithm penalizes hashtag spam.
+- 0-2 emojis MAX across the whole thread.
+- Banned words: groundbreaking, revolutionary, game-changing, unlock, leverage, harness, dive deep, paradigm, elite, supercharge.
+- Tone: confident, curious, slightly opinionated. Talk like a smart friend.
 - No "What do you think?" filler CTAs. If the hook is good, replies come.
-- PLAIN TEXT ONLY. No markdown — no **bold**, no _italics_, no `code`, no headers. X doesn't render them.
+- PLAIN TEXT ONLY. No markdown.
 
 NEWS
 Title: {title}
@@ -31,4 +37,4 @@ Link: {link}
 OUTPUT FORMAT
 If 1 tweet: just the tweet text.
 If 2-3 tweets: separate each with a line containing only --- (three dashes).
-Nothing else — no preamble, no "Here's the thread:", no explanation.
+Nothing else.

@@ -143,6 +143,8 @@ or logs/dashboard.log and propose a fix before continuing.
    ▸  follows       →   1–2 high-quality accounts (conservatively)
    ▸  drafts        →   off-peak hours generate tweets to your approval queue
    ▸  learns        →   tracks own top + bottom performers, biases toward what works
+   ▸  studies       →   scrapes tracked creators in your niche for live style reference
+   ▸  varies        →   rotates 6 content modes (hook · story · contrarian · listicle · question · comparison)
 ```
 
 <br />
@@ -542,6 +544,7 @@ twit-auto/
 | `X_HANDLE`              | *required* | for self-engagement feedback |
 | `DRY_RUN`               | `false` | log actions without performing them |
 | `PROXY_URL`             | *empty* | residential proxy for 24/7 use |
+| `CREATORS_TO_STUDY`     | *empty* | comma-separated X handles (no @) — bot scrapes their top tweets for style reference each cycle |
 
 <br />
 

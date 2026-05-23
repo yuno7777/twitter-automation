@@ -258,6 +258,11 @@ def edit_draft(body: DraftActionBody) -> dict[str, Any]:
     raise HTTPException(status_code=404, detail="Draft not found")
 
 
+@app.get("/api/creator_intel")
+def get_creator_intel() -> dict[str, Any]:
+    return read_state().get("creator_intel", {})
+
+
 @app.get("/api/memory")
 def get_memory() -> dict[str, Any]:
     """Trend-discovery memory — last strategy, topics seen, repos tracked, queued trends."""

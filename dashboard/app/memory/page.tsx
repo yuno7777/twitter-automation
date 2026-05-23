@@ -2,12 +2,13 @@
 
 import useSWR from "swr";
 import { ExternalLink, Star } from "lucide-react";
-import { CriticEntry, fetcher, MemoryResponse } from "@/lib/api";
+import { CreatorIntelResponse, CriticEntry, fetcher, MemoryResponse } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
 
 export default function MemoryPage() {
   const { data } = useSWR<MemoryResponse>("/api/memory", fetcher, { refreshInterval: 15000 });
   const { data: critic } = useSWR<CriticEntry[]>("/api/critic_log", fetcher, { refreshInterval: 15000 });
+  const { data: creators } = useSWR<CreatorIntelResponse>("/api/creator_intel", fetcher, { refreshInterval: 30000 });
   if (!data) return <div className="text-muted text-sm">Loading bot memory…</div>;
 
   const s = data.last_strategy;
@@ -147,6 +148,51 @@ export default function MemoryPage() {
             {data.repos_tracked.slice().reverse().map((r, i) => (
               <li key={i}>
                 <span className="text-white">{r.name}</span> · {timeAgo(r.ts)}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* Creator intel — what top accounts in the niche are posting */}
+      {creators && creators.top_examples && creators.top_examples.length > 0 && (
+        <section className="glass p-6">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">Creator intel</h2>
+            <span className="text-xs text-muted">
+              tracking {creators.creators?.length || 0} accounts ·
+              {creators.fetched_at && <span className="ml-1">refreshed {timeAgo(creators.fetched_at)}</span>}
+            </span>
+          </div>
+          <p className="text-xs text-muted mb-3">
+            Top tweets from your tracked creators this cycle. Fed into the LLM as live "what's working in this niche right now" reference.
+          </p>
+          <ul className="space-y-3">
+            {creators.top_examples.slice(0, 6).map((ex, i) => (
+              <li key={i} className="flex items-start gap-3 border-b border-border last:border-0 pb-3 last:pb-0">
+                <div className="shrink-0 w-14 text-center">
+                  <div className="text-lavender text-xl font-semibold mono">{ex.likes}</div>
+                  <div className="text-[10px] text-muted uppercase tracking-widest">likes</div>
+                </div>
+                <div className="flex-1">
+                  <a
+                    href={`https://x.com/${ex.handle}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-lavender font-medium text-sm hover:underline"
+                  >
+                    @{ex.handle}
+                  </a>
+                  <p className="text-sm text-white/90 mt-1 leading-relaxed">{ex.text}</p>
+                  <a
+                    href={ex.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-muted hover:text-lavender mt-1 inline-block"
+                  >
+                    view on X →
+                  </a>
+                </div>
               </li>
             ))}
           </ul>

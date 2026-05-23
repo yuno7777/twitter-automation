@@ -1,0 +1,167 @@
+{
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\launcher.ps1": {
+    "mtime": 1779500531.733813,
+    "ast_hash": "639f9ef2ab6db07cd4833142c9ee409d",
+    "semantic_hash": "639f9ef2ab6db07cd4833142c9ee409d"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\start.ps1": {
+    "mtime": 1779358538.8073695,
+    "ast_hash": "5f3e9caa900e1c6ad938f1836e00bade",
+    "semantic_hash": "5f3e9caa900e1c6ad938f1836e00bade"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\stopper.ps1": {
+    "mtime": 1779384752.9333296,
+    "ast_hash": "463aa995b8982899d7912f0bc1b73656",
+    "semantic_hash": "463aa995b8982899d7912f0bc1b73656"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\.antigravitycli\\472d6656-a6a7-4bef-b26f-5dd570c0fa84.json": {
+    "mtime": 1779556375.2430093,
+    "ast_hash": "062c152e9a28ffa39431d95e8296081a",
+    "semantic_hash": "062c152e9a28ffa39431d95e8296081a"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\bot\\api_server.py": {
+    "mtime": 1779549575.8722112,
+    "ast_hash": "a2f4b5af00e56c4a80a9900f16cf86cb",
+    "semantic_hash": "a2f4b5af00e56c4a80a9900f16cf86cb"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\bot\\intelligence.py": {
+    "mtime": 1779550282.8543532,
+    "ast_hash": "d83016edc7d7eeda10b6caadc8bd355a",
+    "semantic_hash": "d83016edc7d7eeda10b6caadc8bd355a"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\bot\\x_automation_bot.py": {
+    "mtime": 1779553954.3566294,
+    "ast_hash": "a0c1c0f587e275f2903a8488afa192b3",
+    "semantic_hash": "a0c1c0f587e275f2903a8488afa192b3"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\next-env.d.ts": {
+    "mtime": 1779359100.7448149,
+    "ast_hash": "187b4b5b507c358a018aeeadd81abe57",
+    "semantic_hash": "187b4b5b507c358a018aeeadd81abe57"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\next.config.mjs": {
+    "mtime": 1779357729.9448507,
+    "ast_hash": "ffec57885440ac1bce50e7de9de9b5a5",
+    "semantic_hash": "ffec57885440ac1bce50e7de9de9b5a5"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\package.json": {
+    "mtime": 1779360855.0376718,
+    "ast_hash": "e60555d9738109d532d7f0d2c35995a2",
+    "semantic_hash": "e60555d9738109d532d7f0d2c35995a2"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\postcss.config.mjs": {
+    "mtime": 1779357733.6801846,
+    "ast_hash": "4acb6a30c0858e1e9ceb649da060dca5",
+    "semantic_hash": "4acb6a30c0858e1e9ceb649da060dca5"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\tailwind.config.ts": {
+    "mtime": 1779359770.4897103,
+    "ast_hash": "4aced3d075fe98c720dd6cc581118a09",
+    "semantic_hash": "4aced3d075fe98c720dd6cc581118a09"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\tsconfig.json": {
+    "mtime": 1779357725.616104,
+    "ast_hash": "39c0a36232661eeebcda5dd52dceee80",
+    "semantic_hash": "39c0a36232661eeebcda5dd52dceee80"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\app\\layout.tsx": {
+    "mtime": 1779550645.3740084,
+    "ast_hash": "e56b5f06525420987705623b780bd6ff",
+    "semantic_hash": "e56b5f06525420987705623b780bd6ff"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\app\\page.tsx": {
+    "mtime": 1779550656.491969,
+    "ast_hash": "22c63ff2f7d143bdd3271bb3788497d8",
+    "semantic_hash": "22c63ff2f7d143bdd3271bb3788497d8"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\app\\analytics\\page.tsx": {
+    "mtime": 1779360831.6941493,
+    "ast_hash": "3bba3b6c5b838acedf20d454773d2a87",
+    "semantic_hash": "3bba3b6c5b838acedf20d454773d2a87"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\app\\history\\page.tsx": {
+    "mtime": 1779549701.3213308,
+    "ast_hash": "f658c9c44931d0d83ddaa6283806b00b",
+    "semantic_hash": "f658c9c44931d0d83ddaa6283806b00b"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\app\\memory\\page.tsx": {
+    "mtime": 1779549733.257321,
+    "ast_hash": "37ba3609c3c6b66ab66dace23c6c1916",
+    "semantic_hash": "37ba3609c3c6b66ab66dace23c6c1916"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\app\\queue\\page.tsx": {
+    "mtime": 1779549646.042466,
+    "ast_hash": "743ab461caa1246c10b29b14b5d6b410",
+    "semantic_hash": "743ab461caa1246c10b29b14b5d6b410"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\app\\settings\\page.tsx": {
+    "mtime": 1779357893.1970646,
+    "ast_hash": "e8e686c46a747567d8f7252f610814e9",
+    "semantic_hash": "e8e686c46a747567d8f7252f610814e9"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\components\\sidebar.tsx": {
+    "mtime": 1779550634.4192586,
+    "ast_hash": "f91d63faf8f73585bf5089617334af05",
+    "semantic_hash": "f91d63faf8f73585bf5089617334af05"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\lib\\api.ts": {
+    "mtime": 1779549592.102458,
+    "ast_hash": "03f013a0859b5dacaee3d1b05443cab3",
+    "semantic_hash": "03f013a0859b5dacaee3d1b05443cab3"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\dashboard\\lib\\utils.ts": {
+    "mtime": 1779357763.128811,
+    "ast_hash": "c851ab1b093f34bdd8fa2536cbdcf616",
+    "semantic_hash": "c851ab1b093f34bdd8fa2536cbdcf616"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\README.md": {
+    "mtime": 1779551070.475672,
+    "ast_hash": "6769b5b2619f212d2de2285333b96a94",
+    "semantic_hash": "6769b5b2619f212d2de2285333b96a94"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\.agents\\rules\\graphify.md": {
+    "mtime": 1779556691.7406478,
+    "ast_hash": "a0e4d192b9e2e17256124dbfc8e24e6a",
+    "semantic_hash": "a0e4d192b9e2e17256124dbfc8e24e6a"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\.agents\\workflows\\graphify.md": {
+    "mtime": 1779556691.7416427,
+    "ast_hash": "84de69efd46ab0b8430393bd4188f8f2",
+    "semantic_hash": "84de69efd46ab0b8430393bd4188f8f2"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\bot\\requirements.txt": {
+    "mtime": 1779358245.8229713,
+    "ast_hash": "3883f6172bc0c7cc04173fd81543457a",
+    "semantic_hash": "3883f6172bc0c7cc04173fd81543457a"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\bot\\prompts\\follow_up_prompt.txt": {
+    "mtime": 1779549299.8713117,
+    "ast_hash": "84f0eb822c62557b1915665304181845",
+    "semantic_hash": "84f0eb822c62557b1915665304181845"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\bot\\prompts\\quote_prompt.txt": {
+    "mtime": 1779549288.347492,
+    "ast_hash": "e39caed133e947e9da5878ed210f7648",
+    "semantic_hash": "e39caed133e947e9da5878ed210f7648"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\bot\\prompts\\reply_prompt.txt": {
+    "mtime": 1779555031.009423,
+    "ast_hash": "fb5670ea5f60bc7ad65fecef68f899aa",
+    "semantic_hash": "fb5670ea5f60bc7ad65fecef68f899aa"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\bot\\prompts\\style_notes.txt": {
+    "mtime": 1779360963.8390129,
+    "ast_hash": "2a1903285fa2fd71f1c5bdbb2f38e8d1",
+    "semantic_hash": "2a1903285fa2fd71f1c5bdbb2f38e8d1"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\bot\\prompts\\trend_tweet_prompt.txt": {
+    "mtime": 1779498761.430869,
+    "ast_hash": "59b7430f7346916c90143e7a6f7205ed",
+    "semantic_hash": "59b7430f7346916c90143e7a6f7205ed"
+  },
+  "C:\\Users\\Abhishek Satarkar\\Desktop\\projects\\twit-auto\\bot\\prompts\\tweet_prompt.txt": {
+    "mtime": 1779555031.0074184,
+    "ast_hash": "b4578a4cd74c507bd735236a9503d003",
+    "semantic_hash": "b4578a4cd74c507bd735236a9503d003"
+  }
+}

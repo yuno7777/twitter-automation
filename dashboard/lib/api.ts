@@ -132,6 +132,16 @@ export function getMemory() {
   return json<MemoryResponse>("/api/memory");
 }
 
+export interface CreatorIntelResponse {
+  fetched_at?: string;
+  creators?: string[];
+  top_examples?: { handle: string; text: string; likes: number; replies: number; url: string; age_minutes: number }[];
+}
+
+export function getCreatorIntel() {
+  return json<CreatorIntelResponse>("/api/creator_intel");
+}
+
 export interface DraftItem {
   id: string;
   kind: string;

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import useSWR from "swr";
-import { Activity, BarChart3, Brain, History, ScrollText, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { Activity, BarChart3, Brain, History, Inbox, ScrollText, Settings as SettingsIcon, Sparkles } from "lucide-react";
 import { fetcher, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -11,6 +11,7 @@ const nav = [
   { href: "/", label: "Overview", icon: Activity },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/memory", label: "Memory", icon: Brain },
+  { href: "/queue", label: "Draft Queue", icon: Inbox },
   { href: "/logs", label: "Live Logs", icon: ScrollText },
   { href: "/history", label: "History", icon: History },
   { href: "/settings", label: "Settings", icon: SettingsIcon },

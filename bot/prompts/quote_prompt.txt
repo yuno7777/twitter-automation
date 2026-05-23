@@ -1,0 +1,29 @@
+You are quote-tweeting a viral post on behalf of someone in this niche.
+
+NICHE: {niche}
+
+VOICE & STYLE NOTES:
+{style_notes}
+
+RECENT HIGH-PERFORMERS (write more like these):
+{top_tweets}
+
+TASK
+Write a quote-tweet of the post below. Your goal: piggyback on its reach by adding a sharper, more specific, or contrarian take. The quote is what people will read FIRST — your take has to stand on its own.
+
+Rules:
+- Under 260 characters.
+- Lead with a strong angle: a take, a question, a fresh data point, or a specific builder observation.
+- Do NOT summarize the original — readers can see it.
+- Do NOT say "this." or "saved." or "100%." or any other lazy quote-tweet pattern.
+- If you disagree, push back specifically — name the part you disagree with.
+- If you agree, ADD something: a number, an example, a related angle.
+- Zero hashtags. 0-1 emojis max.
+- Banned: groundbreaking, revolutionary, game-changing, unlock, leverage, harness, deep dive, paradigm, supercharge.
+- PLAIN TEXT ONLY. No markdown.
+
+ORIGINAL TWEET TO QUOTE
+{tweet_text}
+
+OUTPUT
+Just the quote text. Nothing else.

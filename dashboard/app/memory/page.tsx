@@ -2,11 +2,12 @@
 
 import useSWR from "swr";
 import { ExternalLink, Star } from "lucide-react";
-import { fetcher, MemoryResponse } from "@/lib/api";
+import { CriticEntry, fetcher, MemoryResponse } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
 
 export default function MemoryPage() {
   const { data } = useSWR<MemoryResponse>("/api/memory", fetcher, { refreshInterval: 15000 });
+  const { data: critic } = useSWR<CriticEntry[]>("/api/critic_log", fetcher, { refreshInterval: 15000 });
   if (!data) return <div className="text-muted text-sm">Loading bot memory…</div>;
 
   const s = data.last_strategy;
@@ -146,6 +147,42 @@ export default function MemoryPage() {
             {data.repos_tracked.slice().reverse().map((r, i) => (
               <li key={i}>
                 <span className="text-white">{r.name}</span> · {timeAgo(r.ts)}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* Pre-flight critic log */}
+      {critic && critic.length > 0 && (
+        <section className="glass p-6">
+          <h2 className="text-lg font-semibold mb-1">Pre-flight critic log</h2>
+          <p className="text-xs text-muted mb-3">
+            Every tweet/reply/quote is scored 1–10 before posting. Drafts below 7 get regenerated up to 3 times.
+          </p>
+          <ul className="text-xs space-y-1 mono">
+            {critic.slice(0, 25).map((c, i) => (
+              <li key={i} className="flex items-center justify-between gap-4 py-1 border-b border-border last:border-0">
+                <div className="flex items-center gap-3">
+                  <span className={cn(
+                    "text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded shrink-0",
+                    c.role === "tweet" && "bg-lavender/15 text-lavender",
+                    c.role === "reply" && "bg-emerald-500/15 text-emerald-300",
+                    c.role === "quote" && "bg-rose-500/15 text-rose-300",
+                    c.role === "follow_up" && "bg-amber-500/15 text-amber-300",
+                  )}>{c.role}</span>
+                  <span className={cn(
+                    "font-semibold",
+                    c.score >= 8 ? "text-emerald-300" : c.score >= 7 ? "text-amber-300" : "text-rose-300"
+                  )}>
+                    {c.score}/10
+                  </span>
+                  {c.accepted
+                    ? <span className="text-emerald-300/70">accepted</span>
+                    : <span className="text-rose-300/70">regen (attempt {c.attempt})</span>}
+                  {c.issues[0] && <span className="text-muted line-clamp-1">→ {c.issues[0]}</span>}
+                </div>
+                <div className="text-muted shrink-0">{timeAgo(c.ts)}</div>
               </li>
             ))}
           </ul>

@@ -5,19 +5,23 @@ import { useState } from "react";
 import {
   fetcher,
   FollowHistoryItem,
+  FollowUpHistoryItem,
+  QuoteHistoryItem,
   ReplyHistoryItem,
   TweetHistoryItem,
 } from "@/lib/api";
 import { cn, formatLocalTime } from "@/lib/utils";
 import { ExternalLink } from "lucide-react";
 
-const TABS = ["tweets", "replies", "follows"] as const;
+const TABS = ["tweets", "replies", "quotes", "follow_ups", "follows"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function HistoryPage() {
   const [tab, setTab] = useState<Tab>("tweets");
   const { data: tweets } = useSWR<TweetHistoryItem[]>("/api/history/tweets", fetcher, { refreshInterval: 10000 });
   const { data: replies } = useSWR<ReplyHistoryItem[]>("/api/history/replies", fetcher, { refreshInterval: 10000 });
+  const { data: quotes } = useSWR<QuoteHistoryItem[]>("/api/history/quotes", fetcher, { refreshInterval: 10000 });
+  const { data: followUps } = useSWR<FollowUpHistoryItem[]>("/api/history/follow_ups", fetcher, { refreshInterval: 10000 });
   const { data: follows } = useSWR<FollowHistoryItem[]>("/api/history/follows", fetcher, { refreshInterval: 10000 });
 
   return (
@@ -39,15 +43,78 @@ export default function HistoryPage() {
                 : "text-muted hover:text-white"
             )}
           >
-            {t}
+            {t.replace("_", "-")}
           </button>
         ))}
       </div>
 
       {tab === "tweets" && <TweetsTable rows={tweets || []} />}
       {tab === "replies" && <RepliesTable rows={replies || []} />}
+      {tab === "quotes" && <QuotesTable rows={quotes || []} />}
+      {tab === "follow_ups" && <FollowUpsTable rows={followUps || []} />}
       {tab === "follows" && <FollowsTable rows={follows || []} />}
     </div>
+  );
+}
+
+function QuotesTable({ rows }: { rows: QuoteHistoryItem[] }) {
+  if (rows.length === 0) return <Empty label="No quote-tweets yet." />;
+  return (
+    <ul className="space-y-2">
+      {rows.map((q, i) => (
+        <li key={i} className="glass p-4">
+          <p className="text-sm">{q.quote_text}</p>
+          {q.original_tweet_text && (
+            <p className="text-xs text-muted mt-2 line-clamp-2 italic">
+              quoting: {q.original_tweet_text}
+              {q.original_likes !== undefined && (
+                <span className="ml-2 text-lavender mono">({q.original_likes} likes)</span>
+              )}
+            </p>
+          )}
+          <div className="flex items-center justify-between mt-2 text-xs text-muted">
+            <a
+              href={q.original_tweet_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-lavender hover:underline"
+            >
+              <ExternalLink size={12} /> original
+            </a>
+            <span className="mono">{formatLocalTime(q.posted_at)}</span>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function FollowUpsTable({ rows }: { rows: FollowUpHistoryItem[] }) {
+  if (rows.length === 0) return <Empty label="No follow-ups yet." />;
+  return (
+    <ul className="space-y-2">
+      {rows.map((f, i) => (
+        <li key={i} className="glass p-4">
+          <p className="text-xs text-muted mb-1">you posted:</p>
+          <p className="text-sm text-white/70">{f.your_tweet}</p>
+          <p className="text-xs text-muted mt-3 mb-1">they replied:</p>
+          <p className="text-sm text-white/70 italic">{f.their_reply}</p>
+          <p className="text-xs text-lavender mt-3 mb-1">your follow-up:</p>
+          <p className="text-sm">{f.your_followup}</p>
+          <div className="flex items-center justify-between mt-3 text-xs text-muted">
+            <a
+              href={f.thread_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-lavender hover:underline"
+            >
+              <ExternalLink size={12} /> thread
+            </a>
+            <span className="mono">{formatLocalTime(f.posted_at)}</span>
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 

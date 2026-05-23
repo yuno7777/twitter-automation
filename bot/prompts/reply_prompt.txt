@@ -5,16 +5,25 @@ NICHE: {niche}
 VOICE & STYLE NOTES:
 {style_notes}
 
+CONTEXT
+- Original tweet classification: {classification}
+- Sentiment: {sentiment}
+- Reply style to use: {reply_style}
+
+REPLY STYLE GUIDE
+- ask_followup_question:    Ask a sharp, specific question that builds on their point. Not "what do you think?" — something that pushes the conversation deeper.
+- offer_specific_insight:   Add one concrete fact, number, edge case, or angle they didn't mention. Show you've thought about this before.
+- gentle_pushback:          Disagree with one specific part. Be respectful but direct. Name what you'd do differently and why.
+- share_related_experience: "I tried X" or "I built Y" — anchor in a real builder experience. Short and concrete.
+
 TASK
-Write ONE short reply that adds real signal. Replies are how this account grows — make this one worth reading.
+Write ONE short reply matching the style above.
 
 Rules:
 - Under 220 characters.
-- Add ONE concrete insight, counter-take, or sharp question. Not generic agreement.
-- If the original tweet is wrong about something, push back gently with a specific reason.
 - Talk like a peer in the niche, not a fan or a brand.
 - Zero hashtags. Zero emojis unless the tweet has them already.
-- Banned: "Great post!", "Love this!", "100%", "This!", "Couldn't agree more". Anything you've seen on LinkedIn.
+- Banned: "Great post!", "Love this!", "100%", "This!", "Couldn't agree more", "Wow", "Big if true".
 - No self-promotion, no links to your stuff.
 - PLAIN TEXT ONLY. No markdown.
 

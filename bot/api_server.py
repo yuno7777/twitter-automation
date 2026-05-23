@@ -72,7 +72,7 @@ def write_state(state: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 class ControlBody(BaseModel):
-    action: Literal["start", "stop", "pause", "resume"]
+    action: Literal["start", "stop", "pause", "resume", "reset_cycle"]
 
 
 class SettingsBody(BaseModel):
@@ -114,8 +114,12 @@ def control(body: ControlBody) -> dict[str, Any]:
         s["status"] = "paused"
     elif body.action == "stop":
         s["status"] = "stopped"
+    elif body.action == "reset_cycle":
+        # Flag is consumed by the bot's long_wait / inter-cycle sleep
+        s["status"] = "running"
+        s["force_new_cycle"] = True
     write_state(s)
-    return {"ok": True, "status": s["status"]}
+    return {"ok": True, "status": s["status"], "force_new_cycle": s.get("force_new_cycle", False)}
 
 
 @app.get("/api/logs")
@@ -180,6 +184,78 @@ def history_follows() -> list[dict[str, Any]]:
 @app.get("/api/history/likes")
 def history_likes() -> list[dict[str, Any]]:
     return read_state().get("like_history", [])
+
+
+@app.get("/api/history/quotes")
+def history_quotes() -> list[dict[str, Any]]:
+    return read_state().get("quote_history", [])
+
+
+@app.get("/api/history/follow_ups")
+def history_follow_ups() -> list[dict[str, Any]]:
+    return read_state().get("follow_up_history", [])
+
+
+@app.get("/api/critic_log")
+def critic_log() -> list[dict[str, Any]]:
+    return read_state().get("critic_log", [])
+
+
+# --- Draft queue endpoints ---
+
+class DraftActionBody(BaseModel):
+    id: str
+    text: str | None = None  # for edit
+
+
+@app.get("/api/queue")
+def get_queue() -> list[dict[str, Any]]:
+    return read_state().get("draft_queue", [])
+
+
+@app.post("/api/queue/approve")
+def approve_draft(body: DraftActionBody) -> dict[str, Any]:
+    s = read_state()
+    found = False
+    for d in s.get("draft_queue", []):
+        if d.get("id") == body.id:
+            d["approved"] = True
+            d["approved_at"] = datetime.now(timezone.utc).isoformat()
+            found = True
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    write_state(s)
+    return {"ok": True}
+
+
+@app.post("/api/queue/reject")
+def reject_draft(body: DraftActionBody) -> dict[str, Any]:
+    s = read_state()
+    before = len(s.get("draft_queue", []))
+    s["draft_queue"] = [d for d in s.get("draft_queue", []) if d.get("id") != body.id]
+    if len(s["draft_queue"]) == before:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    write_state(s)
+    return {"ok": True}
+
+
+@app.post("/api/queue/edit")
+def edit_draft(body: DraftActionBody) -> dict[str, Any]:
+    if body.text is None:
+        raise HTTPException(status_code=400, detail="text required")
+    s = read_state()
+    for d in s.get("draft_queue", []):
+        if d.get("id") == body.id:
+            # Split edited text on --- to keep thread format
+            parts = [p.strip() for p in body.text.split("\n---\n") if p.strip()]
+            if not parts:
+                parts = [body.text.strip()]
+            d["thread"] = parts
+            d["edited"] = True
+            write_state(s)
+            return {"ok": True}
+    raise HTTPException(status_code=404, detail="Draft not found")
 
 
 @app.get("/api/memory")

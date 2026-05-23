@@ -70,7 +70,7 @@ export function getBotStatus() {
   return json<StatusResponse>("/api/status");
 }
 
-export function controlBot(action: "start" | "stop" | "pause" | "resume") {
+export function controlBot(action: "start" | "stop" | "pause" | "resume" | "reset_cycle") {
   return json<{ ok: boolean; status: BotStatus }>("/api/control", {
     method: "POST",
     body: JSON.stringify({ action }),
@@ -130,6 +130,80 @@ export interface MemoryResponse {
 
 export function getMemory() {
   return json<MemoryResponse>("/api/memory");
+}
+
+export interface DraftItem {
+  id: string;
+  kind: string;
+  thread: string[];
+  title?: string;
+  source_url?: string;
+  created_at: string;
+  approved?: boolean;
+  approved_at?: string;
+  edited?: boolean;
+}
+
+export function getQueue() {
+  return json<DraftItem[]>("/api/queue");
+}
+
+export function approveDraft(id: string) {
+  return json<{ ok: boolean }>("/api/queue/approve", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  });
+}
+
+export function rejectDraft(id: string) {
+  return json<{ ok: boolean }>("/api/queue/reject", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  });
+}
+
+export function editDraft(id: string, text: string) {
+  return json<{ ok: boolean }>("/api/queue/edit", {
+    method: "POST",
+    body: JSON.stringify({ id, text }),
+  });
+}
+
+export interface CriticEntry {
+  ts: string;
+  role: string;
+  score: number;
+  issues: string[];
+  attempt: number;
+  accepted: boolean;
+}
+
+export function getCriticLog() {
+  return json<CriticEntry[]>("/api/critic_log");
+}
+
+export interface QuoteHistoryItem {
+  quote_text: string;
+  original_tweet_url: string;
+  original_tweet_text?: string;
+  original_likes?: number;
+  posted_at: string;
+}
+
+export interface FollowUpHistoryItem {
+  your_tweet: string;
+  their_reply: string;
+  your_followup: string;
+  thread_url: string;
+  posted_at: string;
+}
+
+export function getQuoteHistory() {
+  return json<QuoteHistoryItem[]>("/api/history/quotes");
+}
+
+export function getFollowUpHistory() {
+  return json<FollowUpHistoryItem[]>("/api/history/follow_ups");
 }
 
 export function getSettings() {

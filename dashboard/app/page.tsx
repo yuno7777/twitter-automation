@@ -2,7 +2,7 @@
 
 import useSWR from "swr";
 import { useEffect, useState } from "react";
-import { Play, Pause, Square, MessageCircle, MessagesSquare, UserPlus, Cpu, Heart } from "lucide-react";
+import { Play, Pause, Square, RotateCcw, MessageCircle, MessagesSquare, UserPlus, Cpu, Heart } from "lucide-react";
 import {
   controlBot,
   fetcher,
@@ -51,10 +51,11 @@ function StatCard({ icon: Icon, label, value }: { icon: any; label: string; valu
   );
 }
 
-async function handleControl(action: "start" | "pause" | "resume" | "stop") {
+async function handleControl(action: "start" | "pause" | "resume" | "stop" | "reset_cycle") {
   try {
     await controlBot(action);
-    toast.success(`Bot ${action}`);
+    const label = action === "reset_cycle" ? "Cycle reset — bot will start a new cycle now" : `Bot ${action}`;
+    toast.success(label);
   } catch (e: any) {
     toast.error(e.message || "Control failed");
   }
@@ -133,6 +134,17 @@ export default function OverviewPage() {
           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 transition"
         >
           <Square size={16} /> Stop
+        </button>
+        <button
+          onClick={() => {
+            if (confirm("Skip the current cooldown and start a new cycle now?")) {
+              handleControl("reset_cycle");
+            }
+          }}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-lavender/40 text-lavender hover:bg-lavender/10 transition ml-auto"
+          title="Skip the rest of the current wait/cycle and trigger a fresh cycle immediately"
+        >
+          <RotateCcw size={16} /> Reset Cycle
         </button>
       </section>
 

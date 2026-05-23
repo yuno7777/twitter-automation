@@ -37,14 +37,18 @@
 <br />
 
 ```
-   Every cycle, autonomously:
+   Every 2 hours, autonomously:
 
    ▸  researches    →   GitHub trending · HackerNews · Reddit r/LocalLLaMA
    ▸  writes        →   1–3 tweet thread in your voice, on actually-trending topics
-   ▸  engages       →   5 thoughtful replies to fresh, rising tweets in your niche
+   ▸  critiques     →   every draft scored 1–10 before posting, regenerates if weak
+   ▸  engages       →   5 thoughtful replies, intelligently filtered (no spam/ragebait)
+   ▸  quotes        →   1 viral post per cycle with a sharper take
+   ▸  follows up    →   continues conversations on your own tweets
    ▸  likes         →   10 niche tweets to warm the algo signal
    ▸  follows       →   1–2 high-quality accounts (conservatively)
-   ▸  remembers     →   never repeats, learns from its own top tweets
+   ▸  drafts        →   off-peak hours generate tweets to your approval queue
+   ▸  learns        →   tracks own top + bottom performers, biases toward what works
 ```
 
 <br />
@@ -72,32 +76,55 @@ Scrapes **GitHub recent-hot repos**, **HackerNews AI stories**, and **Reddit r/L
 </td>
 <td width="33%" valign="top">
 
-#### ◆ deterministic + LLM
+#### ◆ pre-flight tweet critic
 
-Regex extracts real repo and product names from the live signal. These get **force-injected** into the bot's search queries — so even if the LLM is lazy, your bot is searching actual trending names.
+Every draft (tweet, reply, quote, follow-up) is scored 1–10 on hook strength, voice match, and value by a second LLM call. Score below 7? Auto-regenerated up to 3 times.
 
 </td>
 <td width="33%" valign="top">
 
-#### ◆ real chrome, not headless
+#### ◆ smart reply candidate analyzer
 
-X aggressively blocks Playwright's bundled Chromium. Uses your installed Chrome with a persistent user-data-dir. **Cookie-based login, no password ever stored.**
+Doesn't just pick the most-liked tweet. LLM classifies each candidate (`spam · giveaway · ragebait · genuine`), reads sentiment, and picks the one worth replying to with the right reply style.
 
 </td>
 </tr>
 <tr>
 <td valign="top">
 
-#### ◆ live dashboard
+#### ◆ engagement learning loop
 
-A pitch-black, lavender-accented Next.js 14 UI with live SSE logs, analytics charts, full action history, and a **memory page** showing what the bot is thinking right now.
+Scrapes your own top **and** bottom-performing tweets each cycle. Both get fed into the next prompt — *"write more like these, avoid those."* The bot compounds toward what works for *your* audience.
 
 </td>
 <td valign="top">
 
-#### ◆ self-improving feedback loop
+#### ◆ quote-tweet capability
 
-Each cycle scrapes your own profile, finds top-performing tweets, and feeds them back into the next LLM prompt as style reference. Tweets compound toward what's working.
+Finds viral fresh tweets in your niche, generates a sharper take, posts as a quote-tweet. Quote-tweets get 2–3× the reach of plain replies on X.
+
+</td>
+<td valign="top">
+
+#### ◆ conversation continuation
+
+When someone replies to your tweet, the bot drafts a thoughtful follow-up. Sentiment-filtered: skips anything hostile or sarcastic. Max one follow-up per thread.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+#### ◆ off-hours draft queue
+
+During off-peak hours, the bot drafts tweets to a queue instead of posting blindly. Wake up, review them on `/queue`, approve / edit / reject. Approved drafts post automatically next peak hour.
+
+</td>
+<td valign="top">
+
+#### ◆ real chrome, not headless
+
+X aggressively blocks Playwright's bundled Chromium. Uses your installed Chrome with a persistent user-data-dir. **Cookie-based login, no password ever stored.**
 
 </td>
 <td valign="top">
@@ -255,11 +282,12 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
 
 | page  | what it shows |
 |:------|:---|
-| `/`              | status, control buttons, countdown to next cycle, stat row, recent activity feed |
-| `/memory`        | what the bot is thinking — live trending terms, current strategy, queued tweet angles, GitHub repos on radar |
-| `/analytics`     | daily activity stacked bars, hourly activity heatmap, your top-performing tweets |
+| `/`              | status, control buttons (start / pause / stop / **reset cycle**), countdown, stat row, recent activity |
+| `/memory`        | live trending terms, current strategy, queued tweet angles, GitHub repos on radar, **pre-flight critic log** |
+| `/queue`         | **off-hours drafts pending your approval** — approve / edit / reject before they post |
+| `/analytics`     | daily activity stacked bars, hourly heatmap, your top-performing tweets |
 | `/logs`          | Server-Sent Events stream of `x_bot.log` with colored levels |
-| `/history`       | tweets · replies · follows tabs with full history |
+| `/history`       | tweets · replies · **quotes** · **follow-ups** · follows tabs |
 | `/settings`      | editable cycle limits, LLM provider, full prompt templates |
 
 <br />
@@ -272,18 +300,21 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
 
 ```
    T+0     initial wake-up delay (1 min)
-   T+1     self-engagement scrape  (read own top tweets for style reference)
-   T+1     strategy synthesis      (fetch signals → LLM → fresh queries)
-   T+2     like 10 niche tweets    (trend-driven queries)
-   T+14    generate + post thread  (if in peak hour; pulled from GitHub/HN signal)
-   T+16    reply  1                (fresh tweet, 5–500 likes, under 90 min old)
+   T+1     self-engagement scrape   (read own top + bottom tweets — what works, what doesn't)
+   T+1     strategy synthesis       (fetch signals → LLM → fresh queries + trending terms)
+   T+2     like 10 niche tweets     (trend-driven queries)
+   T+14    PEAK: critic-gated post  (1 draft + auto-regen if score < 7)
+           OFF: draft 3 → queue     (your approval needed on /queue)
+   T+16    reply  1                 (analyzer picks best of 5 candidates, classifies + styles)
    T+27    reply  2
    T+39    reply  3
    T+51    reply  4
    T+63    reply  5
-   T+75    follow 1                (high-quality account)
-   T+86    follow 2
-   T+97    cycle complete          (sleep ~3–4h before next cycle)
+   T+75    quote-tweet              (viral post, 100–10k likes, under 4h old)
+   T+87    conversation follow-ups  (up to 2 — only on non-hostile replies)
+   T+110   follow 1                 (high-quality account)
+   T+122   follow 2
+   T+134   cycle complete           (sleep ~50 min before next cycle — 2h interval)
 ```
 
 <sub>All cooldowns are `random.uniform(10, 12)` minutes — no fixed pattern X can fingerprint.</sub>
@@ -406,10 +437,12 @@ twit-auto/
 
 | variable | default | purpose |
 |---|---|---|
-| `MAX_POSTS_PER_CYCLE`   | `1` | tweets / threads per cycle |
-| `MAX_REPLIES_PER_CYCLE` | `5` | replies — highest growth lever |
-| `MAX_LIKES_PER_CYCLE`   | `10` | likes — lowest-risk action |
-| `MAX_FOLLOWS_PER_CYCLE` | `2` | follows — keep low to avoid flag |
+| `MAX_POSTS_PER_CYCLE`      | `1` | tweets / threads per cycle |
+| `MAX_REPLIES_PER_CYCLE`    | `5` | replies — highest growth lever |
+| `MAX_QUOTES_PER_CYCLE`     | `1` | quote-tweets per cycle |
+| `MAX_FOLLOW_UPS_PER_CYCLE` | `2` | conversation continuations |
+| `MAX_LIKES_PER_CYCLE`      | `10` | likes — lowest-risk action |
+| `MAX_FOLLOWS_PER_CYCLE`    | `2` | follows — keep low to avoid flag |
 | `PEAK_HOURS`            | `9,10,13,14,19,20,21` | when posting is allowed |
 | `NICHE`                 | *required* | drives every LLM prompt |
 | `X_HANDLE`              | *required* | for self-engagement feedback |
@@ -489,12 +522,17 @@ X blocks Playwright's bundled Chromium. The code uses `channel="chrome"` which l
 ## Roadmap
 
 ```
+   [x]   pre-flight tweet critic (LLM scores draft, regenerates if weak)
+   [x]   smart reply candidate analyzer (spam/ragebait filter + sentiment)
+   [x]   engagement learning loop (top + bottom performer feedback)
+   [x]   quote-tweet capability
+   [x]   conversation continuation (follow-up on your replies)
+   [x]   off-hours draft queue with manual approval
+   [x]   reset cycle button (skip cooldowns on demand)
    [ ]   image attachment via OG-image extraction from news / repos
-   [ ]   quote-tweet support (high-leverage on viral posts)
    [ ]   followers-of-followers discovery (smarter follow targeting)
-   [ ]   real-time engagement tracking per tweet (impressions, likes over time)
+   [ ]   real-time engagement tracking per tweet (impressions over time)
    [ ]   multi-account orchestration
-   [ ]   macros / templates editor in dashboard
 ```
 
 <sub>PRs welcome.</sub>

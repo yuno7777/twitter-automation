@@ -453,6 +453,149 @@ async def synthesize_strategy(
     return strategy
 
 
+# ---------------------------------------------------------------------------
+# Pre-flight tweet critic
+# ---------------------------------------------------------------------------
+
+_CRITIC_SYSTEM = (
+    "You are a brutally honest X growth coach. You rate tweets/replies on whether "
+    "they'd actually drive engagement. You hate generic LinkedIn-style writing. "
+    "You output STRICT JSON only — no markdown, no preamble."
+)
+
+
+async def critique_text(
+    text: str,
+    role: str,                # "tweet" | "reply" | "quote"
+    niche: str,
+    style_notes: str,
+    llm_call: Callable[[str, str], Awaitable[str | None]],
+) -> dict[str, Any]:
+    """Rate a draft 1-10 across multiple dimensions. Returns:
+        {score: int, hook: int, voice_match: int, value: int, issues: [str], verdict: str}
+    """
+    prompt = f"""NICHE: {niche}
+
+VOICE THIS ACCOUNT SHOULD HAVE:
+{style_notes[:1200]}
+
+DRAFT {role.upper()}:
+\"\"\"
+{text}
+\"\"\"
+
+Rate this draft on 1-10 scales:
+- hook: how strong is the opening?
+- voice_match: does this sound like the niche/voice above, or generic AI slop?
+- value: does it actually say something interesting?
+
+Then give an overall score (1-10). 7+ = post it. Under 7 = needs regeneration.
+
+List specific issues (banned words used, weak hook, generic phrasing, LinkedIn energy, hashtag spam, etc.).
+
+Return JSON only:
+{{
+  "hook": <int 1-10>,
+  "voice_match": <int 1-10>,
+  "value": <int 1-10>,
+  "score": <int 1-10>,
+  "issues": ["specific problem 1", "specific problem 2"],
+  "verdict": "post" or "regenerate"
+}}"""
+    raw = await llm_call(prompt, _CRITIC_SYSTEM)
+    parsed = _extract_json(raw or "")
+    if not parsed:
+        # Conservative fallback — let it through but log
+        return {"score": 7, "hook": 7, "voice_match": 7, "value": 7, "issues": [], "verdict": "post"}
+    # Coerce types defensively
+    try:
+        score = int(parsed.get("score", 7))
+    except Exception:
+        score = 7
+    return {
+        "score": max(1, min(10, score)),
+        "hook": int(parsed.get("hook", 7) or 7),
+        "voice_match": int(parsed.get("voice_match", 7) or 7),
+        "value": int(parsed.get("value", 7) or 7),
+        "issues": parsed.get("issues") or [],
+        "verdict": parsed.get("verdict") or ("post" if score >= 7 else "regenerate"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Smart reply candidate analyzer (features 2 + 8 + 9 combined)
+# ---------------------------------------------------------------------------
+
+_REPLY_ANALYZER_SYSTEM = (
+    "You analyze candidate tweets to find the BEST one to reply to for growing a "
+    "specific niche. You ruthlessly filter out spam, giveaways, ragebait, off-topic, "
+    "and low-quality posts. You output STRICT JSON only."
+)
+
+
+async def analyze_reply_candidates(
+    candidates: list[dict[str, Any]],
+    niche: str,
+    llm_call: Callable[[str, str], Awaitable[str | None]],
+) -> dict[str, Any] | None:
+    """Given a list of candidate tweets, classify each (spam/giveaway/ragebait/genuine)
+    + sentiment + reply-worthiness, return the best one to reply to plus its classification.
+
+    Each candidate: {idx, text, likes, age_minutes}
+    Returns: {best_idx: int, classification: str, sentiment: str, reply_style: str, all: [...]}
+    Or None if no candidate is reply-worthy."""
+    if not candidates:
+        return None
+
+    listing = "\n".join(
+        f"[{c['idx']}] (likes={c.get('likes',0)}, age={c.get('age_minutes','?')}min) {c.get('text','')[:300]}"
+        for c in candidates
+    )
+
+    prompt = f"""NICHE: {niche}
+
+Candidate tweets to potentially reply to:
+
+{listing}
+
+For each, classify:
+- type: one of [spam, giveaway, ragebait, off_topic, genuine]
+- sentiment: one of [announcement, question, opinion, complaint, hot_take, technical_problem, neutral]
+- reply_worthiness: int 1-10 (would a reply genuinely add value AND get noticed?)
+- skip: true if type is spam/giveaway/ragebait/off_topic OR worthiness < 5
+
+Then pick the BEST candidate to reply to (highest worthiness, NOT skipped).
+If ALL candidates should be skipped, set best_idx to null.
+
+Return JSON only:
+{{
+  "best_idx": <int or null>,
+  "reply_style": "<one of: ask_followup_question | offer_specific_insight | gentle_pushback | share_related_experience>",
+  "all": [
+    {{"idx": <int>, "type": "<>", "sentiment": "<>", "reply_worthiness": <int>, "skip": <bool>, "skip_reason": "<short reason or null>"}}
+  ]
+}}"""
+    raw = await llm_call(prompt, _REPLY_ANALYZER_SYSTEM)
+    parsed = _extract_json(raw or "")
+    if not parsed:
+        # Fallback: pick first non-empty candidate
+        if candidates:
+            return {
+                "best_idx": candidates[0]["idx"],
+                "reply_style": "offer_specific_insight",
+                "all": [],
+            }
+        return None
+    best_idx = parsed.get("best_idx")
+    if best_idx is None:
+        return None
+    return {
+        "best_idx": int(best_idx),
+        "reply_style": parsed.get("reply_style") or "offer_specific_insight",
+        "all": parsed.get("all") or [],
+    }
+
+
 def _validate_strategy(s: dict[str, Any], signals: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     """Clean and validate the LLM-produced strategy. Drops invented URLs/repos."""
     out = _default_strategy()

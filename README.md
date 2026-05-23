@@ -1,44 +1,173 @@
-# Twit-Auto
+<div align="center">
 
-A fully autonomous X (Twitter) growth bot with a Next.js control dashboard.
+<br />
 
-- **`bot/`** — Python bot (Playwright + Groq/Gemini LLM + RSS news)
-- **`bot/api_server.py`** — FastAPI bridge between the bot's state and the dashboard
-- **`dashboard/`** — Next.js 14 control panel with live logs, history, and analytics
+# twit-auto
 
-Every ~5 hours the bot fetches AI news, generates **1 short thread** (1–3 tweets), posts **5 replies** to recent niche tweets, **likes 10 fresh posts**, and conservatively **follows 1–2 high-quality accounts** — all with large human-like delays and full anti-detection.
+<sub>**[ autonomous · trend-aware · self-pacing ]**</sub>
+
+<br />
+
+#### An X / Twitter growth bot that researches what's actually trending before it speaks.
+
+<sub>Built for builders who'd rather ship code than schedule tweets.</sub>
+
+<br />
+
+![Python](https://img.shields.io/badge/python-3.11+-000000?style=flat-square&logo=python&logoColor=white&labelColor=000)
+![Next.js](https://img.shields.io/badge/next.js-14-000000?style=flat-square&logo=next.js&logoColor=white&labelColor=000)
+![FastAPI](https://img.shields.io/badge/fastapi-0.115-000000?style=flat-square&logo=fastapi&logoColor=white&labelColor=000)
+![Playwright](https://img.shields.io/badge/playwright-1.49-000000?style=flat-square&logo=playwright&logoColor=white&labelColor=000)
+![TypeScript](https://img.shields.io/badge/typescript-5-000000?style=flat-square&logo=typescript&logoColor=white&labelColor=000)
+![Tailwind](https://img.shields.io/badge/tailwind-3.4-000000?style=flat-square&logo=tailwindcss&logoColor=white&labelColor=000)
+
+<br />
+
+![status](https://img.shields.io/badge/status-running_24%2F7-A78BFA?style=flat-square&labelColor=000)
+![license](https://img.shields.io/badge/license-MIT-A78BFA?style=flat-square&labelColor=000)
+![cost](https://img.shields.io/badge/runtime_cost-%240-A78BFA?style=flat-square&labelColor=000)
+![stealth](https://img.shields.io/badge/stealth-real_chrome-A78BFA?style=flat-square&labelColor=000)
+
+<br />
+
+`╌────────────────────────────────────────────────────────╌`
+
+</div>
+
+<br />
+
+```
+   Every cycle, autonomously:
+
+   ▸  researches    →   GitHub trending · HackerNews · Reddit r/LocalLLaMA
+   ▸  writes        →   1–3 tweet thread in your voice, on actually-trending topics
+   ▸  engages       →   5 thoughtful replies to fresh, rising tweets in your niche
+   ▸  likes         →   10 niche tweets to warm the algo signal
+   ▸  follows       →   1–2 high-quality accounts (conservatively)
+   ▸  remembers     →   never repeats, learns from its own top tweets
+```
+
+<br />
+
+> No paid X API. No paid LLM. No proxy required.
+> Just a real Chrome browser, a free Groq + Gemini key, and ~110 minutes of
+> spread-out activity per cycle.
+
+<br />
 
 ---
 
-## Quick start (already-installed machine)
+<br />
 
-Double-click **`Start Twit-Auto.vbs`** on your desktop. Three processes start silently in the background, the dashboard opens automatically in Chrome once Next.js finishes compiling, and that's it.
+## What makes it different
 
-To stop everything: double-click **`Stop Twit-Auto.vbs`** on your desktop.
+<table>
+<tr>
+<td width="33%" valign="top">
+
+#### ◆ real trend discovery
+
+Scrapes **GitHub recent-hot repos**, **HackerNews AI stories**, and **Reddit r/LocalLLaMA + r/singularity** every cycle. An LLM strategy brain decides what to search on X based on what's trending *right now* — not a hardcoded list.
+
+</td>
+<td width="33%" valign="top">
+
+#### ◆ deterministic + LLM
+
+Regex extracts real repo and product names from the live signal. These get **force-injected** into the bot's search queries — so even if the LLM is lazy, your bot is searching actual trending names.
+
+</td>
+<td width="33%" valign="top">
+
+#### ◆ real chrome, not headless
+
+X aggressively blocks Playwright's bundled Chromium. Uses your installed Chrome with a persistent user-data-dir. **Cookie-based login, no password ever stored.**
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+#### ◆ live dashboard
+
+A pitch-black, lavender-accented Next.js 14 UI with live SSE logs, analytics charts, full action history, and a **memory page** showing what the bot is thinking right now.
+
+</td>
+<td valign="top">
+
+#### ◆ self-improving feedback loop
+
+Each cycle scrapes your own profile, finds top-performing tweets, and feeds them back into the next LLM prompt as style reference. Tweets compound toward what's working.
+
+</td>
+<td valign="top">
+
+#### ◆ one-click launcher
+
+Double-click a `.vbs` on your Desktop → 3 hidden background processes start → Chrome auto-opens to the dashboard. Zero terminal flash, zero taskbar clutter.
+
+</td>
+</tr>
+</table>
+
+<br />
 
 ---
 
-## Full setup from scratch
+<br />
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[GitHub API<br/>recently hot repos] --> S
+    B[HackerNews API<br/>top AI stories] --> S
+    C[Reddit JSON<br/>hot ML posts] --> S
+    S[Strategy Brain<br/>Groq llama-3.3-70b<br/>+ Gemini 2.5 fallback] --> Q[Reply Queries<br/>Like Queries<br/>Follow Queries<br/>Tweet Topics<br/>Repos to Mention]
+    Q --> P[Playwright<br/>Real Chrome<br/>Stealth Patches]
+    P --> X[X / Twitter]
+    P --> M[(bot_state.json<br/>Persistent Memory)]
+    M --> S
+
+    API[FastAPI Bridge<br/>:8000] <--> M
+    UI[Next.js Dashboard<br/>:3000] <--> API
+```
+
+<br />
+
+---
+
+<br />
+
+## Quick start
+
+<sub>Already set up? Double-click **`Start Twit-Auto.vbs`** on your desktop. Done.</sub>
+
+<details>
+<summary><b>First-time setup — click to expand</b></summary>
+
+<br />
 
 ### Prerequisites
 
-- **Windows 10/11** (the launcher VBS is Windows-specific; the Python and Next.js code itself is cross-platform)
-- **Python 3.11+** — [python.org/downloads](https://www.python.org/downloads/)
-- **Node.js 18+** — [nodejs.org](https://nodejs.org/)
-- **Google Chrome** — needed for the real Chrome browser channel (Playwright's bundled Chromium is detected by X and gets blocked)
-- An **X account** you control
-- A free **Groq API key** — [console.groq.com](https://console.groq.com)
-- A free **Gemini API key** — [aistudio.google.com](https://aistudio.google.com)
+| requirement | why |
+|---|---|
+| Windows 10/11 | launcher VBS is Windows-specific (the code itself is cross-platform) |
+| Python 3.11+ | bot runtime |
+| Node.js 18+ | dashboard |
+| Google Chrome | real browser channel (bundled Chromium gets blocked by X) |
+| an X account | yours to control |
+| Groq API key *(free)* | primary LLM — [console.groq.com](https://console.groq.com) |
+| Gemini API key *(free)* | rate-limit fallback — [aistudio.google.com](https://aistudio.google.com) |
 
-### 1. Clone the repo
+### 1. Clone
 
-```powershell
-cd "C:\Users\YourName\Desktop\projects"
+```bash
 git clone https://github.com/yuno7777/twitter-automation.git twit-auto
 cd twit-auto
 ```
 
-### 2. Install the bot
+### 2. Bot deps
 
 ```powershell
 cd bot
@@ -46,37 +175,23 @@ pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
-### 3. Configure `.env`
-
-Copy the template:
-```powershell
-cd ..
-copy .env.example .env
-```
-
-Open `.env` and fill in:
+### 3. Configure `.env` *(project root)*
 
 ```env
 GROQ_API_KEY=your_groq_key
 GEMINI_API_KEY=your_gemini_key
-LLM_PROVIDER=groq                 # primary provider — falls back to Gemini on rate limit
-HEADLESS=true                     # false only for first login
+LLM_PROVIDER=groq
+HEADLESS=true
 
-# Your niche — be specific, this drives every tweet/reply
-NICHE=AI agents, LLM workflows, and the gap between AI demos and what actually ships to production. Audience: builders, indie hackers, technical founders.
+# Be specific — this drives every tweet
+NICHE=AI agents, LLM workflows, and the gap between AI demos and what actually ships to production.
 
-# Your X handle (no @) — used for self-engagement feedback loop
-X_HANDLE=your_handle
-
-# Peak posting hours (24h, local time, comma-separated). Empty = post anytime.
+X_HANDLE=your_handle_no_at
 PEAK_HOURS=9,10,13,14,19,20,21
-
-DRY_RUN=false                     # true = log actions but do not actually post/like/follow
+DRY_RUN=false
 ```
 
-### 4. First login (one-time, saves cookies)
-
-The bot uses cookie-based login — no password is ever stored.
+### 4. First login *(saves cookies)*
 
 ```powershell
 cd bot
@@ -84,178 +199,330 @@ $env:HEADLESS="false"
 python x_automation_bot.py login
 ```
 
-A **real Chrome window** opens. Log in to X manually — username, password, any 2FA. The bot watches the URL and **auto-saves cookies** to `cookies.json` once you reach the home feed. Browser closes itself.
+A real Chrome window opens. Log in manually. The bot auto-saves cookies once you reach the home feed.
 
-Set `HEADLESS=true` back in `.env` afterward.
+### 5. Customize your voice
 
-### 5. Customize your voice (recommended)
+Open `bot/prompts/style_notes.txt` and **rewrite it in your own voice**. Single biggest lever for tweet quality.
 
-Open `bot/prompts/style_notes.txt` and **rewrite it in your own voice**. The defaults are decent, but the LLM is only as good as the personality you give it. Add real opinions, the people you actually read, the tools you actually use. This is the single biggest lever for content quality.
-
-### 6. Install the dashboard
+### 6. Dashboard deps
 
 ```powershell
-cd ..\dashboard
+cd ../dashboard
 npm install
 copy .env.local.example .env.local
 ```
 
-### 7. Set up the desktop launchers
+### 7. Desktop launchers
 
-The repo includes `launcher.ps1` and `stopper.ps1`. You need two thin VBS wrappers on your Desktop so double-clicking is fully silent (no terminal flash).
+Place these two files on your Desktop:
 
-Create **`C:\Users\YourName\Desktop\Start Twit-Auto.vbs`**:
+**`Start Twit-Auto.vbs`**
 ```vbs
 Set sh = CreateObject("WScript.Shell")
-sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""C:\Users\YourName\Desktop\projects\twit-auto\launcher.ps1""", 0, False
+sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""C:\path\to\twit-auto\launcher.ps1""", 0, False
 ```
 
-Create **`C:\Users\YourName\Desktop\Stop Twit-Auto.vbs`**:
+**`Stop Twit-Auto.vbs`**
 ```vbs
 Set sh = CreateObject("WScript.Shell")
-sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""C:\Users\YourName\Desktop\projects\twit-auto\stopper.ps1""", 0, False
+sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""C:\path\to\twit-auto\stopper.ps1""", 0, False
 ```
 
-Update the paths in both files to match your machine.
+Update the paths. Also update `$root` at the top of `launcher.ps1` and `stopper.ps1`.
 
-Also update the `$root` path at the top of `launcher.ps1` and `stopper.ps1` to match your project location.
+### 8. Launch
 
-### 8. Run it
+Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http://localhost:3000`.
 
-Double-click **`Start Twit-Auto.vbs`** on the Desktop. Within 15–30 seconds (or 5 seconds on subsequent runs once Next.js is cached) a Chrome window pops open at `http://localhost:3000`.
+</details>
 
----
-
-## Dashboard pages
-
-- **`/`** — Overview: status, control buttons, countdown, stat cards (tweets / replies / likes / follows / LLM calls), recent activity feed
-- **`/analytics`** — Daily activity stacked bars, hourly heatmap, top-performing tweets, lifetime totals
-- **`/logs`** — SSE-streaming terminal viewer with colored log levels
-- **`/history`** — Tabs for Tweets, Replies, Follows with full history
-- **`/settings`** — Editable cycle limits, LLM provider, and full prompt templates
+<br />
 
 ---
 
-## How it works — one cycle
+<br />
 
-Every ~5 hours (with random ±20 min jitter):
+## The dashboard
 
-1. **Initial human-like delay** — 3–10 min wake-up sleep
-2. **Selector health check** — verifies X's UI hasn't changed
-3. **Self-engagement scrape** — visits your own profile, extracts top tweets, feeds them into the next LLM prompt as style reference
-4. **Like 10 niche tweets** — lowest-risk action, warms the algo
-5. **Generate + post 1 thread** (1–3 tweets) — *only if current local hour is in `PEAK_HOURS`*
-6. **Post 5 replies** — searches niche, filters to fresh (<90 min) rising (5–500 likes) tweets, replies thoughtfully
-7. **Follow 1–2 accounts** — conservatively, with 20-min spacing between
+<div align="center">
 
-Off-peak hours: posting is skipped, engagement continues.
+<sub>Five pages. Dark theme. Lavender accents. Glassmorphism.</sub>
+
+</div>
+
+<br />
+
+| page  | what it shows |
+|:------|:---|
+| `/`              | status, control buttons, countdown to next cycle, stat row, recent activity feed |
+| `/memory`        | what the bot is thinking — live trending terms, current strategy, queued tweet angles, GitHub repos on radar |
+| `/analytics`     | daily activity stacked bars, hourly activity heatmap, your top-performing tweets |
+| `/logs`          | Server-Sent Events stream of `x_bot.log` with colored levels |
+| `/history`       | tweets · replies · follows tabs with full history |
+| `/settings`      | editable cycle limits, LLM provider, full prompt templates |
+
+<br />
 
 ---
+
+<br />
+
+## One cycle, end to end
+
+```
+   T+0     initial wake-up delay (1 min)
+   T+1     self-engagement scrape  (read own top tweets for style reference)
+   T+1     strategy synthesis      (fetch signals → LLM → fresh queries)
+   T+2     like 10 niche tweets    (trend-driven queries)
+   T+14    generate + post thread  (if in peak hour; pulled from GitHub/HN signal)
+   T+16    reply  1                (fresh tweet, 5–500 likes, under 90 min old)
+   T+27    reply  2
+   T+39    reply  3
+   T+51    reply  4
+   T+63    reply  5
+   T+75    follow 1                (high-quality account)
+   T+86    follow 2
+   T+97    cycle complete          (sleep ~3–4h before next cycle)
+```
+
+<sub>All cooldowns are `random.uniform(10, 12)` minutes — no fixed pattern X can fingerprint.</sub>
+
+<br />
+
+---
+
+<br />
+
+## The intelligence layer
+
+```
+   ┌── GitHub ──────────────────────────────────────────────┐
+   │   search recently-created repos across 13 AI topics    │
+   │   (ai-agents · agentic · llm · rag · mcp · autonomous) │
+   │   sort by stars · return top 20                        │
+   └────────────────────────────────────────────────────────┘
+   ┌── HackerNews ──────────────────────────────────────────┐
+   │   top 60 stories → filter for AI keyword regex →       │
+   │   return matches with score + comment count            │
+   └────────────────────────────────────────────────────────┘
+   ┌── Reddit ──────────────────────────────────────────────┐
+   │   r/LocalLLaMA hot + r/singularity hot                 │
+   │   public JSON · no auth                                │
+   └────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+   ┌── trending-term extraction ────────────────────────────┐
+   │   regex pulls repo names + capitalised phrases from    │
+   │   titles → ['Hermes 3', 'claude-code', 'MCP', 'GPT-OSS']│
+   └────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+   ┌── LLM strategy brain ──────────────────────────────────┐
+   │   sees:  all signals + memory + trending terms +       │
+   │          recent queries the bot ran +                  │
+   │          topics already covered + repos already used   │
+   │                                                        │
+   │   returns: { reply_queries, like_queries,              │
+   │              follow_queries, tweet_topics[],           │
+   │              github_repos_to_mention[] }               │
+   └────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+   ┌── force-inject trending terms ─────────────────────────┐
+   │   top 4 extracted terms PREPENDED to reply_queries     │
+   │   top 3 PREPENDED to like_queries (deduped)            │
+   │   belt-and-suspenders: even if LLM picks generics,     │
+   │   the bot still searches actual trending names         │
+   └────────────────────────────────────────────────────────┘
+```
+
+<br />
+
+---
+
+<br />
+
+## Stealth & safety
+
+| layer | what it does |
+|:------|:---|
+| real Chrome | `channel="chrome"` with persistent user-data-dir — X trusts it |
+| stealth patches | manual `add_init_script` for `navigator.webdriver`, plugins, WebGL, permissions |
+| no `playwright-stealth` | that PyPI package is unmaintained and detected |
+| cookie-based login | password never touches disk |
+| big random cooldowns | 10–12 min between every major action |
+| selector resilience | every action wrapped in try/except + auto-screenshots on failure |
+| state persistence | never reposts, never re-replies, never re-follows the same target |
+| peak-hour gating | posts only during configurable peak hours; engagement continues off-peak |
+| `DRY_RUN` mode | test the full cycle without actually posting |
+
+<br />
+
+---
+
+<br />
 
 ## File structure
 
 ```
 twit-auto/
 ├── bot/
-│   ├── x_automation_bot.py         # main bot
-│   ├── api_server.py               # FastAPI bridge
+│   ├── x_automation_bot.py     ◀ main bot
+│   ├── intelligence.py         ◀ trend discovery + LLM strategy brain
+│   ├── api_server.py           ◀ FastAPI bridge
 │   ├── prompts/
 │   │   ├── tweet_prompt.txt
+│   │   ├── trend_tweet_prompt.txt
 │   │   ├── reply_prompt.txt
-│   │   └── style_notes.txt         # YOUR voice — edit this
-│   ├── requirements.txt
-│   ├── bot_state.json              # auto-generated
-│   ├── cookies.json                # auto-generated after first login
-│   ├── x_bot.log                   # auto-generated
-│   ├── chrome_profile/             # auto-generated (Chrome user data dir)
-│   └── debug_screenshots/          # auto-created on selector failures
+│   │   └── style_notes.txt     ◀ YOUR voice — customize this
+│   └── requirements.txt
 ├── dashboard/
 │   ├── app/
-│   │   ├── page.tsx                # Overview
-│   │   ├── analytics/page.tsx
-│   │   ├── logs/page.tsx
-│   │   ├── history/page.tsx
-│   │   └── settings/page.tsx
+│   │   ├── page.tsx            ◀ /  overview
+│   │   ├── memory/page.tsx     ◀ /memory     bot brain
+│   │   ├── analytics/page.tsx  ◀ /analytics  charts
+│   │   ├── logs/page.tsx       ◀ /logs       live SSE
+│   │   ├── history/page.tsx    ◀ /history    tweet · reply · follow log
+│   │   └── settings/page.tsx   ◀ /settings   editable config
 │   ├── components/sidebar.tsx
-│   ├── lib/api.ts                  # typed API client
+│   ├── lib/api.ts
 │   └── package.json
-├── logs/                           # launcher runtime logs (auto-created)
-├── launcher.ps1                    # silent multi-process launcher
-├── stopper.ps1                     # silent killer
-├── .env                            # your secrets — git-ignored
-├── .env.example
-└── README.md
+├── launcher.ps1                ◀ silent multi-process launcher
+├── stopper.ps1                 ◀ kill-all script
+├── .env                        ◀ secrets (gitignored)
+└── .env.example
 ```
 
----
-
-## Troubleshooting
-
-### Dashboard says "offline" after running the launcher
-- Check `logs/launcher.err.log`
-- Check `logs/dashboard.log` for Next.js compile errors
-- Check `logs/api.log` for Python errors
-- Run the stop script, then start again — sometimes a previous run left stale processes
-
-### Bot logs say "selector failed"
-- X changes its UI. Open `bot/debug_screenshots/` to see what the bot saw
-- Update the `SELECTORS` dict at the top of `bot/x_automation_bot.py`
-
-### Login flow loops back to the login page
-- X blocks Playwright's bundled Chromium. Make sure you're using `channel="chrome"` — the code does this by default. Just confirm real Google Chrome is installed.
-
-### Account suspended
-- Check `bot/x_bot.log` for the rate at which you were posting/following
-- Lower `MAX_REPLIES_PER_CYCLE` and `MAX_FOLLOWS_PER_CYCLE` in `.env`
-- Wait, appeal, and consider a residential proxy via `PROXY_URL` for the next account
+<br />
 
 ---
 
-## Safety knobs
+<br />
 
-All in `.env`:
+## Configuration
 
-| Variable | Default | Purpose |
+<sub>All in `.env`</sub>
+
+| variable | default | purpose |
 |---|---|---|
-| `MAX_POSTS_PER_CYCLE` | 1 | Tweets/threads per cycle |
-| `MAX_REPLIES_PER_CYCLE` | 5 | Replies per cycle — highest growth lever |
-| `MAX_LIKES_PER_CYCLE` | 10 | Likes per cycle — lowest-risk action |
-| `MAX_FOLLOWS_PER_CYCLE` | 2 | Follows per cycle — keep low |
-| `PEAK_HOURS` | `9,10,13,14,19,20,21` | When posting is allowed |
-| `DRY_RUN` | `false` | Log without actually performing actions |
-| `PROXY_URL` | empty | Residential proxy for long-term use |
+| `MAX_POSTS_PER_CYCLE`   | `1` | tweets / threads per cycle |
+| `MAX_REPLIES_PER_CYCLE` | `5` | replies — highest growth lever |
+| `MAX_LIKES_PER_CYCLE`   | `10` | likes — lowest-risk action |
+| `MAX_FOLLOWS_PER_CYCLE` | `2` | follows — keep low to avoid flag |
+| `PEAK_HOURS`            | `9,10,13,14,19,20,21` | when posting is allowed |
+| `NICHE`                 | *required* | drives every LLM prompt |
+| `X_HANDLE`              | *required* | for self-engagement feedback |
+| `DRY_RUN`               | `false` | log actions without performing them |
+| `PROXY_URL`             | *empty* | residential proxy for 24/7 use |
 
-Start conservative on a fresh account. Ramp up after a healthy week.
-
----
-
-## Manual run (without the launcher)
-
-Three terminals:
-
-```powershell
-# Terminal 1 — bot
-cd bot && python x_automation_bot.py
-
-# Terminal 2 — API bridge
-cd bot && python -m uvicorn api_server:app --reload --port 8000
-
-# Terminal 3 — dashboard
-cd dashboard && npm run dev
-```
-
-Open http://localhost:3000
+<br />
 
 ---
+
+<br />
 
 ## Tech stack
 
-| Layer | Tools |
-|---|---|
-| Browser automation | Playwright (real Chrome via `channel="chrome"` + persistent profile) |
-| LLM | Groq `llama-3.3-70b-versatile` (primary) with Gemini `1.5-flash` fallback |
-| News | `feedparser` over 6 RSS feeds |
-| Backend | FastAPI + Uvicorn |
-| Frontend | Next.js 14, Tailwind, Recharts, shadcn-style components, SWR |
-| Stealth | Manual `add_init_script` patches (no `playwright-stealth`) |
-| State | Single `bot_state.json` file, atomic write |
+<div align="center">
+
+| layer | tools |
+|:------|:---|
+| browser automation | Playwright + real Chrome with persistent profile |
+| LLM (primary) | Groq `llama-3.3-70b-versatile` |
+| LLM (fallback) | Google `gemini-2.5-flash` |
+| trend sources | GitHub API · HackerNews · Reddit JSON |
+| backend | FastAPI · Uvicorn |
+| frontend | Next.js 14 · Tailwind · Recharts · SWR · Lucide |
+| state | single `bot_state.json` with atomic writes |
+
+</div>
+
+<br />
+
+---
+
+<br />
+
+## Troubleshooting
+
+<details>
+<summary><b>Dashboard says "offline" after launch</b></summary>
+<br />
+
+- Check `logs/launcher.err.log`
+- Check `logs/bot.log` and `logs/api.log` for Python tracebacks
+- Make sure `python --version` is 3.11+
+- Try `Stop Twit-Auto.vbs` → wait 5s → `Start Twit-Auto.vbs`
+</details>
+
+<details>
+<summary><b>Bot logs say "selector failed"</b></summary>
+<br />
+
+X changes its UI periodically. Check `bot/debug_screenshots/` to see what the bot saw at failure time. Update the `SELECTORS` dict at the top of `bot/x_automation_bot.py`.
+</details>
+
+<details>
+<summary><b>Login flow loops back to the login page</b></summary>
+<br />
+
+X blocks Playwright's bundled Chromium. The code uses `channel="chrome"` which loads your real installed Chrome — make sure Google Chrome is installed and reachable.
+</details>
+
+<details>
+<summary><b>Account suspended</b></summary>
+<br />
+
+- Check `bot/x_bot.log` for the rate at which you were posting / following
+- Lower `MAX_REPLIES_PER_CYCLE` and `MAX_FOLLOWS_PER_CYCLE` in `.env`
+- For the next account, configure a residential `PROXY_URL`
+- Wait, appeal, learn
+</details>
+
+<br />
+
+---
+
+<br />
+
+## Roadmap
+
+```
+   [ ]   image attachment via OG-image extraction from news / repos
+   [ ]   quote-tweet support (high-leverage on viral posts)
+   [ ]   followers-of-followers discovery (smarter follow targeting)
+   [ ]   real-time engagement tracking per tweet (impressions, likes over time)
+   [ ]   multi-account orchestration
+   [ ]   macros / templates editor in dashboard
+```
+
+<sub>PRs welcome.</sub>
+
+<br />
+
+---
+
+<br />
+
+## Disclaimer
+
+This is for **personal / educational growth use**. Respect X's terms. Use conservatively. The defaults are deliberately low because long-term account safety > short-term volume. Don't run this on someone else's account.
+
+<br />
+
+---
+
+<br />
+
+<div align="center">
+
+`╌────────────────────────────────────────────────────────╌`
+
+<br />
+
+**built by [@yuno7777](https://github.com/yuno7777) · MIT**
+
+<sub>*if you ship something cool with this, tag me on X*</sub>
+
+</div>

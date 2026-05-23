@@ -35,8 +35,8 @@ export function Sidebar() {
           <Sparkles size={18} className="text-black" />
         </div>
         <div>
-          <div className="font-semibold leading-tight">X Bot</div>
-          <div className="text-xs text-muted">Control Center</div>
+          <div className="font-semibold leading-tight">Twitter Growth</div>
+          <div className="text-xs text-muted">System</div>
         </div>
       </div>
 

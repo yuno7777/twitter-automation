@@ -2,13 +2,13 @@
 
 <br />
 
-# twit-auto
+# Twitter Growth System
 
 <sub>**[ autonomous · trend-aware · self-pacing ]**</sub>
 
 <br />
 
-#### An X / Twitter growth bot that researches what's actually trending before it speaks.
+#### A complete X / Twitter growth system that researches what's actually trending before it speaks.
 
 <sub>Built for builders who'd rather ship code than schedule tweets.</sub>
 
@@ -559,7 +559,7 @@ This is for **personal / educational growth use**. Respect X's terms. Use conser
 
 <br />
 
-**built by [@yuno7777](https://github.com/yuno7777) · MIT**
+**Twitter Growth System · built by [@yuno7777](https://github.com/yuno7777) · MIT**
 
 <sub>*if you ship something cool with this, tag me on X*</sub>
 

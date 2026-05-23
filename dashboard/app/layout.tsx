@@ -4,8 +4,8 @@ import { Sidebar } from "@/components/sidebar";
 import { Toaster } from "sonner";
 
 export const metadata: Metadata = {
-  title: "X Bot Dashboard",
-  description: "Control center for the X automation bot",
+  title: "Twitter Growth System",
+  description: "Control center for the Twitter Growth System",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

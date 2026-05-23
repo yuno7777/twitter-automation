@@ -414,8 +414,16 @@ async def synthesize_strategy(
     signals = {"github": gh, "hackernews": hn, "reddit": rd}
 
     # Deterministic trending-term extraction — guaranteed real, signal-derived queries
-    trending_terms = extract_trending_terms(signals)
-    logger.info(f"Extracted {len(trending_terms)} trending terms: {trending_terms[:8]}")
+    trending_terms_raw = extract_trending_terms(signals)
+    logger.info(f"Extracted {len(trending_terms_raw)} trending terms: {trending_terms_raw[:8]}")
+
+    # Niche filter — drop crypto/memecoin/off-topic noise before injection
+    trending_terms = await filter_terms_by_niche(trending_terms_raw, state.get("_niche", ""), llm_call)
+    if len(trending_terms) < len(trending_terms_raw):
+        logger.info(
+            f"Niche filter: {len(trending_terms_raw)} -> {len(trending_terms)} terms "
+            f"(kept: {trending_terms[:8]})"
+        )
 
     prompt = _build_strategy_prompt(state, signals, trending_terms)
     raw = await llm_call(prompt, STRATEGY_SYSTEM)
@@ -451,6 +459,72 @@ async def synthesize_strategy(
     strategy["_signals"] = signals
     strategy["_trending_terms"] = trending_terms
     return strategy
+
+
+# ---------------------------------------------------------------------------
+# Niche filter for trending terms
+# ---------------------------------------------------------------------------
+
+_NICHE_FILTER_SYSTEM = (
+    "You filter a list of trending terms to only those that fit a specific niche. "
+    "You err on the side of keeping ambiguous terms (could be on-niche) and only "
+    "drop terms that are clearly off-niche. You output STRICT JSON only."
+)
+
+
+async def filter_terms_by_niche(
+    terms: list[str],
+    niche: str,
+    llm_call: Callable[[str, str], Awaitable[str | None]],
+) -> list[str]:
+    """Filter trending terms to only those on-niche.
+    Returns the subset (in original order) that's relevant.
+    On LLM failure, returns the original list unchanged (don't lose data)."""
+    if not terms:
+        return []
+
+    numbered = "\n".join(f"  [{i}] {t}" for i, t in enumerate(terms))
+    prompt = f"""NICHE: {niche}
+
+CANDIDATE TRENDING TERMS:
+{numbered}
+
+For each term, decide:
+- "keep" if it could plausibly fit the niche (AI tools, builder topics, LLM/agent projects, dev tools, etc.)
+- "drop" if it's clearly off-niche (crypto/memecoin trading, gambling, NSFW, generic non-tech, sports, politics, finance speculation, etc.)
+
+Be generous with keep — only drop terms you're confident are off-niche.
+
+Return JSON only:
+{{
+  "keep": [<list of int indices to keep>],
+  "drop_reasons": {{"<idx>": "<one-word reason>"}}
+}}"""
+    raw = await llm_call(prompt, _NICHE_FILTER_SYSTEM)
+    parsed = _extract_json(raw or "")
+    if not parsed:
+        logger.warning("Niche filter LLM failed — keeping all trending terms.")
+        return terms
+
+    keep_indices = parsed.get("keep") or []
+    try:
+        keep_set = {int(i) for i in keep_indices if isinstance(i, (int, str)) and str(i).strip().lstrip("-").isdigit()}
+    except Exception:
+        return terms
+
+    filtered = [t for i, t in enumerate(terms) if i in keep_set]
+    drop_reasons = parsed.get("drop_reasons") or {}
+    dropped = [(terms[int(i)], reason) for i, reason in drop_reasons.items()
+               if str(i).isdigit() and int(i) < len(terms)]
+    if dropped:
+        logger.info(f"Niche filter dropped: {dropped[:5]}")
+
+    # Safety net: if filter killed EVERYTHING, that's probably a bug — keep all
+    if not filtered and terms:
+        logger.warning("Niche filter dropped all terms — falling back to unfiltered.")
+        return terms
+
+    return filtered
 
 
 # ---------------------------------------------------------------------------

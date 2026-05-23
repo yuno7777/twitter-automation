@@ -127,9 +127,12 @@ FOLLOW_SEARCH_QUERIES = [
 # Centralized selectors — update here if X changes its UI
 SELECTORS = {
     "compose_tweet_btn": '[data-testid="SideNav_NewTweet_Button"]',
-    "tweet_textarea": '[data-testid="tweetTextarea_0"]',
-    "tweet_submit_btn": '[data-testid="tweetButtonInline"]',
-    "tweet_submit_btn_modal": '[data-testid="tweetButton"]',
+    # Scope to the modal dialog — the home feed has a separate inline textarea
+    # with the same data-testid that steals first-match but not focus.
+    "tweet_textarea": '[role="dialog"] [data-testid="tweetTextarea_0"]',
+    "tweet_textarea_unscoped": '[data-testid="tweetTextarea_0"]',  # fallback only
+    "tweet_submit_btn": '[role="dialog"] [data-testid="tweetButtonInline"]',
+    "tweet_submit_btn_modal": '[role="dialog"] [data-testid="tweetButton"]',
     "tweet_card": '[data-testid="tweet"]',
     "tweet_text": '[data-testid="tweetText"]',
     "reply_btn": '[data-testid="reply"]',
@@ -894,7 +897,7 @@ async def post_thread(page: Page, tweets: list[str]) -> bool:
         await page.wait_for_selector(SELECTORS["tweet_textarea"], timeout=10000)
 
         for i, t in enumerate(tweets):
-            sel = f'[data-testid="tweetTextarea_{i}"]'
+            sel = f'[role="dialog"] [data-testid="tweetTextarea_{i}"]'
             await human_type(page, sel, t)
             await jitter(1, 3)
             if i < len(tweets) - 1:

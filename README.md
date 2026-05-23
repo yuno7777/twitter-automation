@@ -36,6 +36,100 @@
 
 <br />
 
+<br />
+
+## One-prompt setup
+
+<sub>Have an AI coding agent (Claude Code, Cursor, Windsurf, Aider, etc.) set this whole thing up for you. Copy the block below into your agent's prompt, hit enter, answer the questions when it asks.</sub>
+
+<br />
+
+```
+You are setting up the Twitter Growth System on my Windows machine.
+Repo: https://github.com/yuno7777/twitter-automation
+
+Follow these steps in order. Stop and ASK me when you need input.
+
+STEP 1 — Clone
+- Clone the repo to C:\Users\<me>\Desktop\projects\twitter-growth-system
+  (substitute my actual Windows username for <me> — ask me if unsure)
+
+STEP 2 — Verify prerequisites
+- Confirm Python 3.11+, Node.js 18+, and Google Chrome are installed.
+  If any are missing, STOP and tell me what to install.
+
+STEP 3 — Install bot dependencies
+- cd bot
+- pip install -r requirements.txt
+- python -m playwright install chromium
+
+STEP 4 — Configure .env
+- ASK ME for these values, one by one:
+  1. GROQ_API_KEY  (free at console.groq.com)
+  2. GEMINI_API_KEY  (free at aistudio.google.com)
+  3. X_HANDLE  (my Twitter/X username without the @)
+  4. NICHE  (1-2 sentences — what my account is about)
+- Copy .env.example to .env at the project root
+- Fill in the values I gave you. Leave PROXY_URL empty.
+- Keep HEADLESS=true and DRY_RUN=false.
+
+STEP 5 — Customize voice
+- Open bot/prompts/style_notes.txt
+- ASK ME 3 questions:
+  a) Who am I writing as (builder, founder, researcher, etc.)?
+  b) Name 2-3 opinions I actually hold about AI/tech.
+  c) Name 2-3 tools I actually use day-to-day (Claude, Cursor, n8n, etc.).
+- Rewrite the style_notes.txt file using my answers. Keep the existing
+  structure (WHO I AM / HOW I WRITE / OPINIONS I HOLD / THINGS I NEVER SAY)
+  but make every line authentic to me.
+
+STEP 6 — First-time X login (this requires me)
+- Run: cd bot ; $env:HEADLESS="false" ; python x_automation_bot.py login
+- A real Chrome window will open. STOP and tell me to log in manually.
+- Wait for me to confirm I've reached the home feed before continuing.
+- The bot will auto-save cookies to bot/cookies.json.
+
+STEP 7 — Install dashboard
+- cd ../dashboard
+- npm install
+- Copy .env.local.example to .env.local
+
+STEP 8 — Wire up the launcher paths
+- Open launcher.ps1 and stopper.ps1 at the project root.
+- Update the $root variable at the top of each to match the actual project path
+  on my machine (use the path from Step 1).
+
+STEP 9 — Create desktop shortcuts
+- Create C:\Users\<me>\Desktop\Start Twitter Growth.vbs containing:
+    Set sh = CreateObject("WScript.Shell")
+    sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""<full path to launcher.ps1>""", 0, False
+- Create C:\Users\<me>\Desktop\Stop Twitter Growth.vbs the same way,
+  pointing at stopper.ps1.
+- Substitute the real absolute paths — no <placeholders>.
+
+STEP 10 — First launch
+- Double-click Start Twitter Growth.vbs (or run the VBS via wscript)
+- Tell me to wait 15-30 seconds for Chrome to open the dashboard at
+  http://localhost:3000
+
+STEP 11 — Verify
+- Confirm the dashboard loads, the status pill shows RUNNING, and the
+  Memory page populates within a few minutes.
+
+If any step fails, show me the exact error from logs/bot.log, logs/api.log,
+or logs/dashboard.log and propose a fix before continuing.
+```
+
+<br />
+
+<sub>Once it's running, the rest of the README is reference — skip to **Dashboard** below to see what each page does.</sub>
+
+<br />
+
+---
+
+<br />
+
 ```
    Every 2 hours, autonomously:
 

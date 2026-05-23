@@ -361,9 +361,9 @@ def _extract_json(text: str) -> dict[str, Any] | None:
         return None
     blob = text[start:end + 1]
 
-    # Pass 1: as-is
+    # Pass 1: strict — strips control chars too if any leaked
     try:
-        return json.loads(blob)
+        return json.loads(blob, strict=False)
     except Exception:
         pass
 
@@ -377,10 +377,10 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     # Smart quotes → regular quotes
     cleaned = cleaned.replace("“", '"').replace("”", '"').replace("’", "'")
     try:
-        return json.loads(cleaned)
+        # strict=False allows literal control chars (\n, \t) inside string values
+        return json.loads(cleaned, strict=False)
     except Exception as e:
         logger.warning(f"Strategy JSON parse failed even after cleanup: {e}")
-        # Log a small snippet to help diagnose
         logger.debug(f"JSON snippet near failure: {cleaned[:300]}")
         return None
 
@@ -489,11 +489,23 @@ async def filter_terms_by_niche(
 CANDIDATE TRENDING TERMS:
 {numbered}
 
-For each term, decide:
-- "keep" if it could plausibly fit the niche (AI tools, builder topics, LLM/agent projects, dev tools, etc.)
-- "drop" if it's clearly off-niche (crypto/memecoin trading, gambling, NSFW, generic non-tech, sports, politics, finance speculation, etc.)
+For each term, decide keep vs drop.
 
-Be generous with keep — only drop terms you're confident are off-niche.
+ALWAYS DROP if the term contains or relates to:
+- crypto, memecoin, token, ico, presale, "pump", airdrop, wallet exploit
+- polymarket, prediction market, sports betting, gambling, casino
+- forex / day trading / signal group / "to the moon"
+- politics, NSFW, religion, drama, celebrity gossip
+
+ALWAYS KEEP if the term is:
+- an unfamiliar-looking single word or repo-style name (foo, bar, qux-agents) — these are
+  usually new tools / libraries / projects. When in doubt, KEEP. Better to over-include than miss
+  the next hot agent framework.
+- mentions: ai, llm, agent, gpt, claude, gemini, rag, mcp, embedding, vector,
+  langchain, n8n, cursor, claude code, anthropic, openai, hugging face, transformer
+
+For each dropped term, give a one-word reason from this list:
+crypto · gambling · politics · nsfw · drama · sports · forex · spam · other
 
 Return JSON only:
 {{

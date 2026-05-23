@@ -112,6 +112,26 @@ export function getAnalytics(days = 14) {
   return json<AnalyticsResponse>(`/api/analytics?days=${days}`);
 }
 
+export interface MemoryResponse {
+  last_strategy: {
+    reply_queries: string[];
+    follow_queries: string[];
+    like_queries: string[];
+    tweet_topics: { angle: string; context: string; source_url: string }[];
+    github_repos_to_mention: { name: string; why: string; url: string; stars: number; description?: string }[];
+  } | null;
+  last_strategy_at: string | null;
+  trending_terms: string[];
+  topics_seen: string[];
+  repos_tracked: { name: string; ts: string }[];
+  trends_to_explore_later: string[];
+  recent_queries: { query: string; role: string; ts: string; candidate_count: number }[];
+}
+
+export function getMemory() {
+  return json<MemoryResponse>("/api/memory");
+}
+
 export function getSettings() {
   return json<BotSettings>("/api/settings");
 }

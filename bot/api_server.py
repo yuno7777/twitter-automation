@@ -182,6 +182,22 @@ def history_likes() -> list[dict[str, Any]]:
     return read_state().get("like_history", [])
 
 
+@app.get("/api/memory")
+def get_memory() -> dict[str, Any]:
+    """Trend-discovery memory — last strategy, topics seen, repos tracked, queued trends."""
+    m = read_state().get("search_memory", {})
+    last = m.get("last_strategy") or {}
+    return {
+        "last_strategy": m.get("last_strategy"),
+        "last_strategy_at": m.get("last_strategy_at"),
+        "trending_terms": last.get("_trending_terms") or last.get("trending_terms") or [],
+        "topics_seen": (m.get("topics_seen") or [])[-50:],
+        "repos_tracked": (m.get("github_repos_tracked") or [])[-30:],
+        "trends_to_explore_later": (m.get("trends_to_explore_later") or [])[-25:],
+        "recent_queries": (m.get("queries_run") or [])[-40:],
+    }
+
+
 def _parse_iso(s: str | None) -> datetime | None:
     if not s:
         return None

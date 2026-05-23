@@ -35,6 +35,8 @@ import feedparser
 from dotenv import load_dotenv
 from playwright.async_api import BrowserContext, Page, async_playwright
 
+import intelligence
+
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
@@ -159,6 +161,15 @@ DEFAULT_STATE: dict[str, Any] = {
     "follow_history": [],
     "like_history": [],
     "top_tweets": [],            # populated by self-engagement scrape
+    # Trend-discovery memory — grows over time, drives smarter searches
+    "search_memory": {
+        "queries_run": [],                # [{query, ts, candidate_count, role}]
+        "topics_seen": [],                # de-duped list of topics already covered
+        "github_repos_tracked": [],       # repos already tweeted/mentioned
+        "trends_to_explore_later": [],    # queued for future cycles
+        "last_strategy": None,            # most recent strategy dict
+        "last_strategy_at": None,
+    },
     "stats": {
         "total_tweets": 0,
         "total_replies": 0,
@@ -282,7 +293,8 @@ async def call_llm(user_prompt: str, system_prompt: str, state: dict[str, Any]) 
                     logger.warning("Gemini API key not set, skipping Gemini.")
                     continue
                 import google.generativeai as genai
-                model = genai.GenerativeModel("gemini-1.5-flash")
+                # gemini-2.5-flash is the current stable; 1.5-flash and 2.0-flash are out
+                model = genai.GenerativeModel("gemini-2.5-flash")
                 result = await asyncio.to_thread(
                     model.generate_content, f"{system_prompt}\n\n{user_prompt}"
                 )
@@ -302,6 +314,60 @@ async def call_llm(user_prompt: str, system_prompt: str, state: dict[str, Any]) 
 def load_prompt(name: str) -> str:
     path = PROMPTS_DIR / f"{name}.txt"
     return path.read_text(encoding="utf-8")
+
+
+def _dedupe_keep_order(xs: list[str], cap: int = 200) -> list[str]:
+    seen = set()
+    out: list[str] = []
+    for x in xs:
+        k = x.strip().lower()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(x.strip())
+    return out[-cap:]
+
+
+def merge_memory(state: dict[str, Any], strategy: dict[str, Any]) -> None:
+    """Fold a fresh strategy's memory_updates into long-term state."""
+    mem = state.setdefault("search_memory", {})
+    saved = {k: v for k, v in strategy.items() if not k.startswith("_")}
+    # Preserve deterministically extracted trending terms (LLM-independent)
+    saved["trending_terms"] = strategy.get("_trending_terms", [])
+    mem["last_strategy"] = saved
+    mem["last_strategy_at"] = datetime.now(timezone.utc).isoformat()
+
+    mu = strategy.get("memory_updates", {}) or {}
+    if mu.get("topics_seen_add"):
+        mem["topics_seen"] = _dedupe_keep_order(
+            (mem.get("topics_seen") or []) + list(mu["topics_seen_add"])
+        )
+    if mu.get("trends_to_explore_later"):
+        mem["trends_to_explore_later"] = _dedupe_keep_order(
+            (mem.get("trends_to_explore_later") or []) + list(mu["trends_to_explore_later"]),
+            cap=50,
+        )
+    save_state(state)
+
+
+def record_query_run(state: dict[str, Any], query: str, role: str, count: int) -> None:
+    mem = state.setdefault("search_memory", {})
+    mem.setdefault("queries_run", []).append({
+        "query": query,
+        "role": role,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "candidate_count": count,
+    })
+    mem["queries_run"] = mem["queries_run"][-200:]
+    save_state(state)
+
+
+def record_repo_tracked(state: dict[str, Any], repo_name: str) -> None:
+    mem = state.setdefault("search_memory", {})
+    tracked = mem.setdefault("github_repos_tracked", [])
+    if repo_name and repo_name not in [r.get("name") for r in tracked]:
+        tracked.append({"name": repo_name, "ts": datetime.now(timezone.utc).isoformat()})
+        mem["github_repos_tracked"] = tracked[-100:]
+        save_state(state)
 
 
 def load_style_notes() -> str:
@@ -612,6 +678,23 @@ async def generate_thread(item: NewsItem, state: dict[str, Any]) -> list[str]:
     return split_thread(text)
 
 
+async def generate_trend_thread(topic: dict[str, Any], state: dict[str, Any]) -> list[str]:
+    """Turn a strategy tweet_topic (from real GitHub/HN signal) into a 1-3 tweet thread."""
+    template = load_prompt("trend_tweet_prompt")
+    user_prompt = template.format(
+        niche=NICHE,
+        style_notes=load_style_notes(),
+        top_tweets=format_top_tweets(state),
+        angle=topic.get("angle", ""),
+        context=topic.get("context", ""),
+        source_url=topic.get("source_url", ""),
+    )
+    text = await call_llm(user_prompt, "You write sharp builder-focused X posts.", state)
+    if not text:
+        return []
+    return split_thread(text)
+
+
 async def generate_reply(tweet_text: str, state: dict[str, Any]) -> str | None:
     template = load_prompt("reply_prompt")
     user_prompt = template.format(
@@ -725,11 +808,12 @@ LIKE_SEARCH_QUERIES = [
 ]
 
 
-async def like_recent_tweets(page: Page, state: dict[str, Any], max_likes: int) -> int:
+async def like_recent_tweets(page: Page, state: dict[str, Any], max_likes: int, queries: list[str] | None = None) -> int:
     """Search niche, like fresh tweets. Returns count of successful likes."""
     if max_likes <= 0:
         return 0
-    query = random.choice(LIKE_SEARCH_QUERIES)
+    pool = queries or LIKE_SEARCH_QUERIES
+    query = random.choice(pool)
     url = f"https://x.com/search?q={quote_plus(query)}&f=live"
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -740,6 +824,7 @@ async def like_recent_tweets(page: Page, state: dict[str, Any], max_likes: int) 
         return 0
 
     cards = await page.query_selector_all(SELECTORS["tweet_card"])
+    record_query_run(state, query, "like", len(cards))
     liked = 0
     for card in cards[:25]:
         if liked >= max_likes:
@@ -1071,7 +1156,7 @@ async def run_cycle(state: dict[str, Any]) -> None:
 
         try:
             set_action(state, "Initial human-like delay")
-            await long_wait(1, 4, state, "Initial wake-up delay")
+            await long_wait(1, 1, state, "Initial wake-up delay")
             if not await respect_control(state):
                 return
 
@@ -1086,50 +1171,110 @@ async def run_cycle(state: dict[str, Any]) -> None:
             await scrape_own_top_tweets(page, state)
             await jitter(2, 5)
 
+            # --- LLM strategy synthesis (the brain) ---
+            set_action(state, "Researching trends + synthesizing strategy")
+            strategy = await intelligence.synthesize_strategy(
+                state, NICHE,
+                lambda u, s: call_llm(u, s, state),
+            )
+            merge_memory(state, strategy)
+            logger.info(
+                f"Strategy: reply_queries={strategy['reply_queries']} | "
+                f"topics={len(strategy['tweet_topics'])} | "
+                f"repos={len(strategy['github_repos_to_mention'])}"
+            )
+
             # --- Likes first (low-risk, warms the algo signal) ---
             if MAX_LIKES_PER_CYCLE > 0:
                 set_action(state, "Liking niche tweets")
-                likes_made = await like_recent_tweets(page, state, MAX_LIKES_PER_CYCLE)
+                like_queries = strategy.get("like_queries") or ["AI agents", "LLM", "Claude"]
+                likes_made = await like_recent_tweets(page, state, MAX_LIKES_PER_CYCLE, like_queries)
                 await long_wait(10, 12, state, "Cooldown after likes")
 
             # --- Posts (skip entirely off-peak) ---
             if is_peak and MAX_POSTS_PER_CYCLE > 0:
-                set_action(state, "Fetching news")
-                news = fetch_news(state)
-                news_to_post = news[:MAX_POSTS_PER_CYCLE]
+                # Build a post queue: strategy topics (trend-driven) FIRST, RSS as fallback.
+                post_queue: list[dict[str, Any]] = []
 
-                for i, item in enumerate(news_to_post):
+                # 1. LLM-curated trending topics (real GitHub / HN sources)
+                for t in strategy.get("tweet_topics", []):
+                    post_queue.append({"kind": "trend", "data": t})
+
+                # 2. GitHub repos worth highlighting — synthesize as tweet topics
+                for repo in strategy.get("github_repos_to_mention", []):
+                    name = repo.get("name", "")
+                    if not name:
+                        continue
+                    post_queue.append({"kind": "repo", "data": {
+                        "angle": f"new GitHub repo: {name} - {repo.get('why','')}",
+                        "context": repo.get("description", ""),
+                        "source_url": repo.get("url", ""),
+                        "repo_name": name,
+                    }})
+
+                # 3. RSS fallback if strategy is thin
+                if len(post_queue) < MAX_POSTS_PER_CYCLE:
+                    set_action(state, "Fetching news (fallback)")
+                    news = fetch_news(state)
+                    for item in news[: MAX_POSTS_PER_CYCLE - len(post_queue)]:
+                        post_queue.append({"kind": "rss", "data": item})
+
+                # Shuffle inside each kind class a bit so we don't always lead with trend
+                trend_items = [q for q in post_queue if q["kind"] in ("trend", "repo")]
+                rss_items   = [q for q in post_queue if q["kind"] == "rss"]
+                random.shuffle(trend_items)
+                post_queue = trend_items + rss_items
+
+                for i, qitem in enumerate(post_queue[:MAX_POSTS_PER_CYCLE]):
                     if posts_made >= MAX_POSTS_PER_CYCLE:
                         break
                     if not await respect_control(state):
                         return
 
-                    set_action(state, f"Generating thread {i+1}/{len(news_to_post)}")
-                    thread = await generate_thread(item, state)
+                    kind = qitem["kind"]
+                    data = qitem["data"]
+                    set_action(state, f"Generating {kind} thread {i+1}")
+
+                    if kind == "rss":
+                        thread = await generate_thread(data, state)
+                        title = data.title
+                        link = data.link
+                    else:
+                        thread = await generate_trend_thread(data, state)
+                        title = data.get("angle", "")[:120]
+                        link = data.get("source_url", "")
+
                     if not thread:
-                        logger.warning("Thread generation returned empty — skipping.")
-                        state["processed_links"].append(item.link)
-                        save_state(state)
+                        logger.warning(f"Thread generation empty for {kind} — skipping.")
+                        if kind == "rss":
+                            state["processed_links"].append(data.link)
+                            save_state(state)
                         continue
 
-                    set_action(state, f"Posting thread {i+1} ({len(thread)} tweet(s))")
+                    set_action(state, f"Posting {kind} thread {i+1} ({len(thread)} tweet(s))")
                     if await post_thread(page, thread):
                         posts_made += 1
                         state["stats"]["total_tweets"] += 1
                         state["tweet_history"].insert(0, {
                             "text": "\n---\n".join(thread),
                             "posted_at": datetime.now(timezone.utc).isoformat(),
-                            "news_title": item.title,
-                            "news_link": item.link,
+                            "news_title": title,
+                            "news_link": link,
                             "thread_length": len(thread),
+                            "kind": kind,
                         })
                         state["tweet_history"] = state["tweet_history"][:200]
 
-                    state["processed_links"].append(item.link)
-                    state["processed_links"] = state["processed_links"][-500:]
+                        # Track repo so we don't repeat it
+                        if kind == "repo" and data.get("repo_name"):
+                            record_repo_tracked(state, data["repo_name"])
+
+                    if kind == "rss":
+                        state["processed_links"].append(data.link)
+                        state["processed_links"] = state["processed_links"][-500:]
                     save_state(state)
 
-                    if i < len(news_to_post) - 1 and posts_made < MAX_POSTS_PER_CYCLE:
+                    if i < len(post_queue) - 1 and posts_made < MAX_POSTS_PER_CYCLE:
                         await long_wait(10, 12, state, "Spacing between posts")
 
             # --- Replies (highest growth lever — do many) ---
@@ -1139,19 +1284,21 @@ async def run_cycle(state: dict[str, Any]) -> None:
                 # Shorter cooldown for first reply, then space them out
                 await long_wait(10, 12, state, "Pre-reply pause")
 
+                # Strategy-driven query pool (LLM-curated), falls back to baseline
+                reply_pool = strategy.get("reply_queries") or REPLY_SEARCH_QUERIES
                 used_queries: set[str] = set()
                 for r_idx in range(MAX_REPLIES_PER_CYCLE):
                     if not await respect_control(state):
                         return
-                    # Pick a query we haven't used this cycle
-                    available = [q for q in REPLY_SEARCH_QUERIES if q not in used_queries]
+                    available = [q for q in reply_pool if q not in used_queries]
                     if not available:
-                        available = REPLY_SEARCH_QUERIES
+                        available = reply_pool
                     query = random.choice(available)
                     used_queries.add(query)
 
                     set_action(state, f"Reply {r_idx+1}/{MAX_REPLIES_PER_CYCLE}: searching '{query}'")
                     cands = await discover_reply_candidates(page, query)
+                    record_query_run(state, query, "reply", len(cands))
                     # Filter: fresh (under 90 min), rising (5-500 likes — avoid mega-viral), not replied
                     cands = [
                         c for c in cands
@@ -1196,9 +1343,11 @@ async def run_cycle(state: dict[str, Any]) -> None:
                     return
                 await long_wait(10, 12, state, "Cooldown before follow discovery")
 
-                query = random.choice(FOLLOW_SEARCH_QUERIES)
+                follow_pool = strategy.get("follow_queries") or FOLLOW_SEARCH_QUERIES
+                query = random.choice(follow_pool)
                 set_action(state, f"Searching users for '{query}'")
                 users = await discover_user_candidates(page, query)
+                record_query_run(state, query, "follow", len(users))
                 users = [u for u in users if u.username not in state["followed_usernames"]]
 
                 target = random.randint(1, MAX_FOLLOWS_PER_CYCLE)

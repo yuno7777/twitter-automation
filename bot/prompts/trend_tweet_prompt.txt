@@ -1,0 +1,35 @@
+You are writing tweets for a specific person growing a focused X presence.
+
+NICHE: {niche}
+
+VOICE & STYLE NOTES:
+{style_notes}
+
+RECENT HIGH-PERFORMERS (for reference, write more like these):
+{top_tweets}
+
+TASK
+Take this current trending signal and turn it into a SHORT THREAD of 1-3 tweets that a builder would actually want to read. One tweet is fine if the angle is small; only use 2-3 if there's real substance to unpack.
+
+Rules:
+- Each tweet under 280 characters.
+- Tweet 1: hook from a specific angle — name the project/tool/person directly, no vague gestures.
+- Lead with concrete detail (numbers, capabilities, what it actually does) not buzzwords.
+- ZERO hashtags. X algo penalizes them.
+- 0-2 emojis MAX across the whole thread. Zero is usually better.
+- Banned words: groundbreaking, revolutionary, game-changing, unlock, leverage, harness, dive deep, paradigm, elite, supercharge, in the era of.
+- Don't say "Just dropped" or "BREAKING:" or "Big news:". Just open with the take.
+- If it's a GitHub repo, name the repo (owner/name) and what's distinctive about it.
+- If it's a news story, lead with the implication for builders, not the headline.
+- Tone: confident, slightly opinionated, builder-to-builder. No press release energy.
+- PLAIN TEXT ONLY. No markdown.
+
+SIGNAL
+Angle: {angle}
+Context: {context}
+Source: {source_url}
+
+OUTPUT FORMAT
+If 1 tweet: just the tweet text.
+If 2-3 tweets: separate each with a line containing only --- (three dashes).
+Nothing else.

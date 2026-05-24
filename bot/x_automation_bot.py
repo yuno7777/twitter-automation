@@ -273,8 +273,15 @@ async def respect_control(state: dict[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# LLM wrapper with Groq -> Gemini fallback
+# LLM wrapper — 3-tier cascade
 # ---------------------------------------------------------------------------
+#   1. Groq · openai/gpt-oss-120b           (primary — best reasoning + JSON)
+#   2. Groq · llama-3.3-70b-versatile       (Groq fallback — same provider, different model)
+#   3. Google · gemini-2.5-flash            (last-resort fallback — different provider)
+
+GROQ_PRIMARY_MODEL  = os.getenv("GROQ_PRIMARY_MODEL",  "openai/gpt-oss-120b")
+GROQ_FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile")
+GEMINI_MODEL        = os.getenv("GEMINI_MODEL",        "gemini-2.5-flash")
 
 _groq_client = None
 _gemini_configured = False
@@ -296,49 +303,73 @@ def _configure_gemini():
         _gemini_configured = True
 
 
+async def _try_groq(model: str, user_prompt: str, system_prompt: str) -> str | None:
+    client = _get_groq()
+    if client is None:
+        return None
+    resp = await asyncio.to_thread(
+        client.chat.completions.create,
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.85,
+        max_tokens=600,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+async def _try_gemini(user_prompt: str, system_prompt: str) -> str | None:
+    if not GEMINI_API_KEY:
+        return None
+    _configure_gemini()
+    import google.generativeai as genai
+    model = genai.GenerativeModel(GEMINI_MODEL)
+    result = await asyncio.to_thread(
+        model.generate_content, f"{system_prompt}\n\n{user_prompt}"
+    )
+    return (result.text or "").strip()
+
+
 async def call_llm(user_prompt: str, system_prompt: str, state: dict[str, Any]) -> str | None:
-    """Try Groq, then Gemini. Returns None if both fail."""
+    """3-tier cascade: GPT-OSS-120B → Llama-3.3-70B → Gemini-2.5-Flash."""
     state["stats"]["llm_calls_today"] = state["stats"].get("llm_calls_today", 0) + 1
 
-    # Determine order based on configured primary provider
-    primary = LLM_PROVIDER if LLM_PROVIDER in ("groq", "gemini") else "groq"
-    order = ["groq", "gemini"] if primary == "groq" else ["gemini", "groq"]
+    attempts: list[tuple[str, str]] = []  # (label, error preview)
 
-    for provider in order:
-        try:
-            if provider == "groq":
-                client = _get_groq()
-                if client is None:
-                    logger.warning("Groq API key not set, skipping Groq.")
-                    continue
-                resp = await asyncio.to_thread(
-                    client.chat.completions.create,
-                    model="llama-3.3-70b-versatile",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=0.85,
-                    max_tokens=400,
-                )
-                return resp.choices[0].message.content.strip()
-            else:
-                _configure_gemini()
-                if not GEMINI_API_KEY:
-                    logger.warning("Gemini API key not set, skipping Gemini.")
-                    continue
-                import google.generativeai as genai
-                # gemini-2.5-flash is the current stable; 1.5-flash and 2.0-flash are out
-                model = genai.GenerativeModel("gemini-2.5-flash")
-                result = await asyncio.to_thread(
-                    model.generate_content, f"{system_prompt}\n\n{user_prompt}"
-                )
-                return (result.text or "").strip()
-        except Exception as e:
-            logger.warning(f"LLM provider '{provider}' failed: {e}")
-            await asyncio.sleep(5)
+    # Tier 1 — Groq primary (GPT-OSS-120B)
+    try:
+        out = await _try_groq(GROQ_PRIMARY_MODEL, user_prompt, system_prompt)
+        if out:
+            return out
+    except Exception as e:
+        attempts.append((f"groq/{GROQ_PRIMARY_MODEL}", str(e)[:120]))
+        logger.warning(f"LLM primary '{GROQ_PRIMARY_MODEL}' failed: {e}")
+        await asyncio.sleep(3)
 
-    logger.error("All LLM providers failed.")
+    # Tier 2 — Groq fallback (Llama 3.3) — same provider, different model
+    try:
+        out = await _try_groq(GROQ_FALLBACK_MODEL, user_prompt, system_prompt)
+        if out:
+            logger.info(f"LLM fallback to '{GROQ_FALLBACK_MODEL}' succeeded.")
+            return out
+    except Exception as e:
+        attempts.append((f"groq/{GROQ_FALLBACK_MODEL}", str(e)[:120]))
+        logger.warning(f"LLM fallback '{GROQ_FALLBACK_MODEL}' failed: {e}")
+        await asyncio.sleep(3)
+
+    # Tier 3 — Gemini (different provider, last resort)
+    try:
+        out = await _try_gemini(user_prompt, system_prompt)
+        if out:
+            logger.info(f"LLM last-resort fallback to '{GEMINI_MODEL}' succeeded.")
+            return out
+    except Exception as e:
+        attempts.append((f"gemini/{GEMINI_MODEL}", str(e)[:120]))
+        logger.warning(f"LLM last-resort '{GEMINI_MODEL}' failed: {e}")
+
+    logger.error(f"All LLM tiers failed. Attempts: {attempts}")
     return None
 
 

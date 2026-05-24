@@ -133,18 +133,21 @@ or logs/dashboard.log and propose a fix before continuing.
 ```
    Every 2 hours, autonomously:
 
-   ▸  researches    →   GitHub trending · HackerNews · Reddit r/LocalLLaMA
-   ▸  writes        →   1–3 tweet thread in your voice, on actually-trending topics
-   ▸  critiques     →   every draft scored 1–10 before posting, regenerates if weak
-   ▸  engages       →   5 thoughtful replies, intelligently filtered (no spam/ragebait)
+   ▸  researches    →   GitHub trending · HackerNews · Reddit r/LocalLLaMA · 5 AI newsletters
+   ▸  writes        →   1–3 tweet thread in your voice, grounded in real source URLs
+   ▸  attaches      →   pulls og:image from the article/repo and posts it with the thread
+   ▸  critiques     →   every draft scored 1–10 (hook · voice · value · grounding) before posting
+   ▸  engages       →   5 thoughtful replies, LLM-filtered (no spam/ragebait/off-topic)
    ▸  quotes        →   1 viral post per cycle with a sharper take
-   ▸  follows up    →   continues conversations on your own tweets
+   ▸  follows up    →   continues conversations on your own tweets (sentiment-checked)
    ▸  likes         →   10 niche tweets to warm the algo signal
-   ▸  follows       →   1–2 high-quality accounts (conservatively)
+   ▸  follows       →   1–2 high-quality accounts — biased toward followers-of-creators-you-admire
    ▸  drafts        →   off-peak hours generate tweets to your approval queue
    ▸  learns        →   tracks own top + bottom performers, biases toward what works
    ▸  studies       →   scrapes tracked creators in your niche for live style reference
    ▸  varies        →   rotates 6 content modes (hook · story · contrarian · listicle · question · comparison)
+   ▸  monitors      →   own account health each cycle — auto-pauses if X shows suspension/limit
+   ▸  adapts        →   exponential backoff (1x→8x) when X throttles, resets on clean cycle
 ```
 
 <br />
@@ -218,9 +221,55 @@ During off-peak hours, the bot drafts tweets to a queue instead of posting blind
 </td>
 <td valign="top">
 
+#### ◆ 3-tier LLM cascade with rate-limit memory
+
+`gpt-oss-120b` → `llama-3.3-70b` → `gemini-2.5`. **Two Groq API keys** for separate rate budgets per tier. When a model 429s, the bot **records the cooldown** and skips it until it recovers — no wasted requests.
+
+</td>
+<td valign="top">
+
+#### ◆ anti-hallucination grounding
+
+Every tweet must include its source URL. Critic has a dedicated `grounding` axis — a community repo presented as an official launch, an unverifiable benchmark, or an ambiguous product name gets auto-rejected and regenerated.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+#### ◆ account health monitor
+
+Each cycle scrapes your own profile. Detects `suspension`, `limited`, `verify required` warnings and follower-count drops. Auto-pauses the bot on critical. Banner on the dashboard.
+
+</td>
+<td valign="top">
+
+#### ◆ best-time-to-post auto-detect
+
+`/api/optimal_hours` analyzes your tweet history × engagement and surfaces the hours your audience actually responds. Shown next to current `PEAK_HOURS` on `/analytics`.
+
+</td>
+<td valign="top">
+
 #### ◆ real chrome, not headless
 
 X aggressively blocks Playwright's bundled Chromium. Uses your installed Chrome with a persistent user-data-dir. **Cookie-based login, no password ever stored.**
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+#### ◆ followers-of-creators discovery
+
+60% of follow phases visit a tracked creator's `/followers` page instead of generic search. Same-niche audience signal → way higher follow-back rate.
+
+</td>
+<td valign="top">
+
+#### ◆ eval harness
+
+`bot/evals/tweet_eval.jsonl` + `eval_runner.py`. Score any model / prompt change against 10 labeled scenarios including an adversarial pump-fraud prompt. Use `--compare A,B` for A/B model bake-offs.
 
 </td>
 <td valign="top">
@@ -243,11 +292,16 @@ Double-click a `.vbs` on your Desktop → 3 hidden background processes start �
 
 ```mermaid
 flowchart LR
-    A[GitHub API<br/>recently hot repos] --> S
-    B[HackerNews API<br/>top AI stories] --> S
+    A[GitHub API<br/>recent hot repos] --> S
+    B[HackerNews<br/>top AI stories] --> S
     C[Reddit JSON<br/>hot ML posts] --> S
-    S[Strategy Brain<br/>Groq llama-3.3-70b<br/>+ Gemini 2.5 fallback] --> Q[Reply Queries<br/>Like Queries<br/>Follow Queries<br/>Tweet Topics<br/>Repos to Mention]
-    Q --> P[Playwright<br/>Real Chrome<br/>Stealth Patches]
+    N[5 AI Newsletters<br/>AINews · Latent Space ...] --> S
+    CR[Creator profiles<br/>top tweets scrape] --> S
+
+    S[Strategy Brain<br/>3-tier LLM cascade<br/>gpt-oss-120b → llama-3.3 → gemini-2.5<br/>w/ rate-limit memory] --> Q[Reply / Like / Follow queries<br/>Tweet topics + repos<br/>Trending terms]
+
+    Q --> CR2[Pre-flight Critic<br/>hook · voice · value · grounding]
+    CR2 --> P[Playwright<br/>Real Chrome<br/>Stealth Patches]
     P --> X[X / Twitter]
     P --> M[(bot_state.json<br/>Persistent Memory)]
     M --> S
@@ -378,13 +432,13 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
 
 | page  | what it shows |
 |:------|:---|
-| `/`              | status, control buttons (start / pause / stop / **reset cycle**), countdown, stat row, recent activity |
-| `/memory`        | live trending terms, current strategy, queued tweet angles, GitHub repos on radar, **pre-flight critic log** |
+| `/`              | status, control buttons (start / pause / stop / **reset cycle**), countdown, stat row, recent activity. Banners for: account-health critical/warning, adaptive backoff active, cookie refresh, LLM-tier exhaustion |
+| `/memory`        | live trending terms, current strategy, queued tweet angles, GitHub repos on radar, **creator intel**, **pre-flight critic log** |
 | `/queue`         | **off-hours drafts pending your approval** — approve / edit / reject before they post |
-| `/analytics`     | daily activity stacked bars, hourly heatmap, your top-performing tweets |
+| `/analytics`     | daily activity stacked bars, hourly heatmap, your top-performing tweets, **optimal posting hours** (auto-detected) |
 | `/logs`          | Server-Sent Events stream of `x_bot.log` with colored levels |
 | `/history`       | tweets · replies · **quotes** · **follow-ups** · follows tabs |
-| `/settings`      | editable cycle limits, LLM provider, full prompt templates |
+| `/settings`      | **3-tier LLM cascade picker** (per-tier model + API key status), cycle limits, full prompt templates |
 
 <br />
 
@@ -396,10 +450,12 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
 
 ```
    T+0     initial wake-up delay (1 min)
-   T+1     self-engagement scrape   (read own top + bottom tweets — what works, what doesn't)
-   T+1     strategy synthesis       (fetch signals → LLM → fresh queries + trending terms)
-   T+2     like 10 niche tweets     (trend-driven queries)
-   T+14    PEAK: critic-gated post  (1 draft + auto-regen if score < 7)
+   T+1     account-health check     (scrape own profile — auto-pause if X warns)
+   T+2     self-engagement scrape   (read own top + bottom tweets)
+   T+2     creator intel scrape     (top tweets from CREATORS_TO_STUDY)
+   T+3     strategy synthesis       (signals → LLM → fresh queries + trending terms)
+   T+5     like 10 niche tweets     (trend-driven queries)
+   T+14    PEAK: critic-gated post  (1 thread + og:image, auto-regen if grounding < 7)
            OFF: draft 3 → queue     (your approval needed on /queue)
    T+16    reply  1                 (analyzer picks best of 5 candidates, classifies + styles)
    T+27    reply  2
@@ -408,12 +464,12 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
    T+63    reply  5
    T+75    quote-tweet              (viral post, 100–10k likes, under 4h old)
    T+87    conversation follow-ups  (up to 2 — only on non-hostile replies)
-   T+110   follow 1                 (high-quality account)
+   T+110   follow 1                 (60% from followers-of-creator-you-admire)
    T+122   follow 2
    T+134   cycle complete           (sleep ~50 min before next cycle — 2h interval)
 ```
 
-<sub>All cooldowns are `random.uniform(10, 12)` minutes — no fixed pattern X can fingerprint.</sub>
+<sub>All cooldowns are `random.uniform(10, 12)` minutes by default. Adaptive backoff multiplies them x2 / x4 / x8 if X throws errors. Resets on clean cycle.</sub>
 
 <br />
 
@@ -425,30 +481,44 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
 
 ```
    ┌── GitHub ──────────────────────────────────────────────┐
-   │   search recently-created repos across 13 AI topics    │
-   │   (ai-agents · agentic · llm · rag · mcp · autonomous) │
+   │   recently-created repos · 8 of 13 AI topics sampled   │
    │   sort by stars · return top 20                        │
    └────────────────────────────────────────────────────────┘
    ┌── HackerNews ──────────────────────────────────────────┐
-   │   top 60 stories → filter for AI keyword regex →       │
-   │   return matches with score + comment count            │
+   │   top 60 stories → AI keyword filter                   │
    └────────────────────────────────────────────────────────┘
    ┌── Reddit ──────────────────────────────────────────────┐
-   │   r/LocalLLaMA hot + r/singularity hot                 │
-   │   public JSON · no auth                                │
+   │   r/LocalLLaMA + r/ChatGPT (anchors) + 2 random of     │
+   │   {singularity · MachineLearning · OpenAI · LLMDevs}   │
+   └────────────────────────────────────────────────────────┘
+   ┌── Newsletters ─────────────────────────────────────────┐
+   │   AINews · Latent Space · BensBites · Smol AI ·        │
+   │   Import AI  →  recent items via RSS                   │
+   └────────────────────────────────────────────────────────┘
+   ┌── Creator intel ───────────────────────────────────────┐
+   │   for each handle in CREATORS_TO_STUDY:                │
+   │   visit profile · scrape top tweets by likes           │
+   │   →  live "what's working in this niche" examples      │
    └────────────────────────────────────────────────────────┘
                               │
                               ▼
    ┌── trending-term extraction ────────────────────────────┐
-   │   regex pulls repo names + capitalised phrases from    │
-   │   titles → ['Hermes 3', 'claude-code', 'MCP', 'GPT-OSS']│
+   │   regex pulls repo names + capitalised phrases →       │
+   │   ['Hermes 3', 'claude-code', 'MCP', 'forkd']          │
+   └────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+   ┌── niche filter (LLM) ──────────────────────────────────┐
+   │   drops crypto/gambling/politics/spam                  │
+   │   keeps unfamiliar repo-style names by default         │
    └────────────────────────────────────────────────────────┘
                               │
                               ▼
    ┌── LLM strategy brain ──────────────────────────────────┐
+   │   3-tier cascade with rate-limit memory:               │
+   │     gpt-oss-120b → llama-3.3-70b → gemini-2.5-flash    │
    │   sees:  all signals + memory + trending terms +       │
-   │          recent queries the bot ran +                  │
-   │          topics already covered + repos already used   │
+   │          recent queries + topics covered + repos used  │
    │                                                        │
    │   returns: { reply_queries, like_queries,              │
    │              follow_queries, tweet_topics[],           │
@@ -457,10 +527,16 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
                               │
                               ▼
    ┌── force-inject trending terms ─────────────────────────┐
-   │   top 4 extracted terms PREPENDED to reply_queries     │
-   │   top 3 PREPENDED to like_queries (deduped)            │
-   │   belt-and-suspenders: even if LLM picks generics,     │
-   │   the bot still searches actual trending names         │
+   │   top 4 extracted terms prepended to reply_queries     │
+   │   top 3 prepended to like_queries (deduped)            │
+   │   rotates fresh vs recently-used to avoid repetition   │
+   └────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+   ┌── pre-flight critic ───────────────────────────────────┐
+   │   every draft scored: hook · voice · value · grounding │
+   │   score < 7  →  auto-regenerate (up to 3 attempts)     │
+   │   grounding < 7  →  hard-cap overall to 6 (fail-safe)  │
    └────────────────────────────────────────────────────────┘
 ```
 
@@ -479,6 +555,10 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
 | no `playwright-stealth` | that PyPI package is unmaintained and detected |
 | cookie-based login | password never touches disk |
 | big random cooldowns | 10–12 min between every major action |
+| **account health monitor** | scrapes own profile for suspension/limited warnings each cycle — auto-pauses on critical |
+| **adaptive cooldowns** | 2+ errors in a cycle → next cycle x2, then x4, then x8. Resets on clean cycle. |
+| **anti-hallucination grounding** | critic auto-fails any tweet that misrepresents a source or omits the URL |
+| **cookie refresh detection** | dashboard banner after 30-day cookie age, with one-line re-auth command |
 | selector resilience | every action wrapped in try/except + auto-screenshots on failure |
 | state persistence | never reposts, never re-replies, never re-follows the same target |
 | peak-hour gating | posts only during configurable peak hours; engagement continues off-peak |
@@ -496,22 +576,30 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
 twit-auto/
 ├── bot/
 │   ├── x_automation_bot.py     ◀ main bot
-│   ├── intelligence.py         ◀ trend discovery + LLM strategy brain
+│   ├── intelligence.py         ◀ trend discovery + LLM strategy brain + critic + niche filter
+│   ├── creator_intel.py        ◀ creator scraping + content style rotation
 │   ├── api_server.py           ◀ FastAPI bridge
+│   ├── eval_runner.py          ◀ benchmark prompts/models against tweet_eval.jsonl
 │   ├── prompts/
 │   │   ├── tweet_prompt.txt
 │   │   ├── trend_tweet_prompt.txt
 │   │   ├── reply_prompt.txt
+│   │   ├── quote_prompt.txt
+│   │   ├── follow_up_prompt.txt
 │   │   └── style_notes.txt     ◀ YOUR voice — customize this
+│   ├── evals/
+│   │   ├── tweet_eval.jsonl    ◀ 10 labeled scenarios for the eval harness
+│   │   └── last_run.json       ◀ auto-generated
 │   └── requirements.txt
 ├── dashboard/
 │   ├── app/
-│   │   ├── page.tsx            ◀ /  overview
-│   │   ├── memory/page.tsx     ◀ /memory     bot brain
-│   │   ├── analytics/page.tsx  ◀ /analytics  charts
-│   │   ├── logs/page.tsx       ◀ /logs       live SSE
-│   │   ├── history/page.tsx    ◀ /history    tweet · reply · follow log
-│   │   └── settings/page.tsx   ◀ /settings   editable config
+│   │   ├── page.tsx            ◀ /            overview + banners
+│   │   ├── memory/page.tsx     ◀ /memory      bot brain + critic log
+│   │   ├── queue/page.tsx      ◀ /queue       off-hours draft approval
+│   │   ├── analytics/page.tsx  ◀ /analytics   charts + optimal hours
+│   │   ├── logs/page.tsx       ◀ /logs        live SSE
+│   │   ├── history/page.tsx    ◀ /history     5 tabs
+│   │   └── settings/page.tsx   ◀ /settings    LLM cascade picker
 │   ├── components/sidebar.tsx
 │   ├── lib/api.ts
 │   └── package.json
@@ -541,10 +629,15 @@ twit-auto/
 | `MAX_FOLLOWS_PER_CYCLE`    | `2` | follows — keep low to avoid flag |
 | `PEAK_HOURS`            | `9,10,13,14,19,20,21` | when posting is allowed |
 | `NICHE`                 | *required* | drives every LLM prompt |
-| `X_HANDLE`              | *required* | for self-engagement feedback |
+| `X_HANDLE`              | *required* | for self-engagement feedback + health checks |
+| `CREATORS_TO_STUDY`     | *empty* | comma-separated X handles (no @) — bot scrapes their tweets each cycle |
+| `GROQ_PRIMARY_MODEL`    | `openai/gpt-oss-120b` | tier 1 of the LLM cascade |
+| `GROQ_FALLBACK_MODEL`   | `llama-3.3-70b-versatile` | tier 2 — used when tier 1 rate-limits |
+| `GEMINI_MODEL`          | `gemini-2.5-flash` | tier 3 — last resort |
+| `GROQ_PRIMARY_API_KEY`  | falls back to `GROQ_API_KEY` | own rate budget for tier 1 |
+| `GROQ_FALLBACK_API_KEY` | falls back to `GROQ_API_KEY` | own rate budget for tier 2 |
 | `DRY_RUN`               | `false` | log actions without performing them |
 | `PROXY_URL`             | *empty* | residential proxy for 24/7 use |
-| `CREATORS_TO_STUDY`     | *empty* | comma-separated X handles (no @) — bot scrapes their top tweets for style reference each cycle |
 
 <br />
 
@@ -559,12 +652,14 @@ twit-auto/
 | layer | tools |
 |:------|:---|
 | browser automation | Playwright + real Chrome with persistent profile |
-| LLM (primary) | Groq `llama-3.3-70b-versatile` |
-| LLM (fallback) | Google `gemini-2.5-flash` |
-| trend sources | GitHub API · HackerNews · Reddit JSON |
-| backend | FastAPI · Uvicorn |
+| LLM tier 1 | Groq `openai/gpt-oss-120b` (reasoning + structured JSON) |
+| LLM tier 2 | Groq `llama-3.3-70b-versatile` (rate-limit fallback, own API key) |
+| LLM tier 3 | Google `gemini-2.5-flash` (last resort, different provider) |
+| trend sources | GitHub API · HackerNews · Reddit · 5 AI newsletters · creator profiles |
+| backend | FastAPI · Uvicorn · `json-repair` (3-pass LLM JSON recovery) |
 | frontend | Next.js 14 · Tailwind · Recharts · SWR · Lucide |
 | state | single `bot_state.json` with atomic writes |
+| eval | `bot/eval_runner.py` against labeled `tweet_eval.jsonl` |
 
 </div>
 
@@ -619,17 +714,29 @@ X blocks Playwright's bundled Chromium. The code uses `channel="chrome"` which l
 ## Roadmap
 
 ```
-   [x]   pre-flight tweet critic (LLM scores draft, regenerates if weak)
+   [x]   pre-flight tweet critic (hook + voice + value + grounding)
    [x]   smart reply candidate analyzer (spam/ragebait filter + sentiment)
    [x]   engagement learning loop (top + bottom performer feedback)
    [x]   quote-tweet capability
    [x]   conversation continuation (follow-up on your replies)
    [x]   off-hours draft queue with manual approval
    [x]   reset cycle button (skip cooldowns on demand)
-   [ ]   image attachment via OG-image extraction from news / repos
-   [ ]   followers-of-followers discovery (smarter follow targeting)
+   [x]   creator intelligence (scrape tracked creators for style)
+   [x]   content style rotation (6 modes — hook, story, contrarian, listicle, question, comparison)
+   [x]   3-tier LLM cascade with per-tier API keys + rate-limit memory
+   [x]   anti-hallucination grounding (mandatory source URLs + critic axis)
+   [x]   newsletter scrape source (AINews, Latent Space, BensBites, Smol AI, Import AI)
+   [x]   image attachment via OG-image extraction
+   [x]   followers-of-creator discovery (60% bias toward same-niche audiences)
+   [x]   account health monitor (auto-pause on suspension/limit)
+   [x]   adaptive cooldowns (1x → 8x backoff on errors)
+   [x]   cookie refresh detection (30-day banner)
+   [x]   best-time-to-post auto-detect (from your own engagement data)
+   [x]   eval harness with adversarial scenarios
    [ ]   real-time engagement tracking per tweet (impressions over time)
    [ ]   multi-account orchestration
+   [ ]   DSPy-compiled critic/analyzer prompts
+   [ ]   preference-pair logging for future LoRA fine-tuning
 ```
 
 <sub>PRs welcome.</sub>

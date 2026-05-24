@@ -284,6 +284,19 @@ def cookie_status() -> dict[str, Any]:
     }
 
 
+@app.get("/api/llm_health")
+def llm_health() -> dict[str, Any]:
+    """LLM cascade health — surfaces rate-limit cooldowns to dashboard banner."""
+    s = read_state()
+    h = s.get("llm_health", {}) or {}
+    return {
+        "status": h.get("status", "unknown"),
+        "last_error": h.get("last_error"),
+        "checked_at": h.get("checked_at"),
+        "cooldowns": h.get("cooldowns", {}),
+    }
+
+
 @app.get("/api/health")
 def get_health() -> dict[str, Any]:
     """Account health snapshot — feeds dashboard banner."""

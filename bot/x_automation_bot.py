@@ -291,15 +291,55 @@ GROQ_FALLBACK_API_KEY = os.getenv("GROQ_FALLBACK_API_KEY", "").strip() or GROQ_A
 _groq_clients: dict[str, Any] = {}  # cache by API key
 _gemini_configured = False
 
+# Per-model rate-limit cooldown — when a model 429s, we skip it until this time.
+# Key: model name. Value: monotonic timestamp when it's safe to retry.
+_model_cooldowns: dict[str, float] = {}
+# Last known LLM health status — surfaced via /api/llm_health
+_llm_health: dict[str, Any] = {"status": "ok", "last_error": None, "checked_at": None}
+
 
 def _get_groq(api_key: str | None):
-    """Get (or build) a Groq client for the given API key. Caches per-key."""
+    """Get (or build) a Groq client for the given API key. Caches per-key.
+    Disables SDK auto-retry so OUR cascade handles 429 — otherwise the SDK eats
+    the 28s wait inside the call and we never get to fall back."""
     if not api_key:
         return None
     if api_key not in _groq_clients:
         from groq import Groq
-        _groq_clients[api_key] = Groq(api_key=api_key)
+        _groq_clients[api_key] = Groq(api_key=api_key, max_retries=0)
     return _groq_clients[api_key]
+
+
+def _model_ready(model: str) -> bool:
+    """True if we're past the recorded cooldown for this model (or never seen 429)."""
+    until = _model_cooldowns.get(model)
+    if until is None:
+        return True
+    if time.monotonic() >= until:
+        _model_cooldowns.pop(model, None)
+        return True
+    return False
+
+
+def _parse_groq_retry_after(err: Exception) -> float:
+    """Pull the 'try again in N s' hint out of a Groq 429 error message.
+    Falls back to 30s if we can't parse."""
+    msg = str(err)
+    m = re.search(r"try again in (\d+\.?\d*)s", msg)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            pass
+    return 30.0
+
+
+def _mark_rate_limited(model: str, err: Exception) -> None:
+    """Record a cooldown for the model so the next call skips it."""
+    wait = _parse_groq_retry_after(err)
+    until = time.monotonic() + wait + 1.0  # +1s safety margin
+    _model_cooldowns[model] = until
+    logger.warning(f"Rate-limited on {model} — skipping for ~{wait:.0f}s")
 
 
 def _configure_gemini():
@@ -340,44 +380,91 @@ async def _try_gemini(user_prompt: str, system_prompt: str) -> str | None:
 
 
 async def call_llm(user_prompt: str, system_prompt: str, state: dict[str, Any]) -> str | None:
-    """3-tier cascade: GPT-OSS-120B → Llama-3.3-70B → Gemini-2.5-Flash."""
+    """3-tier cascade with rate-limit memory.
+    GPT-OSS-120B → Llama-3.3-70B → Gemini-2.5-Flash, but each tier is SKIPPED
+    while it's in a known rate-limit cooldown window."""
     state["stats"]["llm_calls_today"] = state["stats"].get("llm_calls_today", 0) + 1
+    attempts: list[tuple[str, str]] = []
 
-    attempts: list[tuple[str, str]] = []  # (label, error preview)
+    # Tier 1 — Groq primary
+    if _model_ready(GROQ_PRIMARY_MODEL):
+        try:
+            out = await _try_groq(GROQ_PRIMARY_MODEL, GROQ_PRIMARY_API_KEY, user_prompt, system_prompt)
+            if out:
+                _llm_health.update({"status": "ok", "last_error": None, "checked_at": datetime.now(timezone.utc).isoformat()})
+                _persist_llm_health(state)
+                return out
+        except Exception as e:
+            attempts.append((f"groq/{GROQ_PRIMARY_MODEL}", str(e)[:120]))
+            if "429" in str(e) or "rate_limit" in str(e).lower():
+                _mark_rate_limited(GROQ_PRIMARY_MODEL, e)
+            else:
+                logger.warning(f"LLM primary '{GROQ_PRIMARY_MODEL}' failed: {e}")
+            await asyncio.sleep(1)
+    else:
+        logger.debug(f"Skipping primary '{GROQ_PRIMARY_MODEL}' — still in cooldown")
 
-    # Tier 1 — Groq primary (GPT-OSS-120B with primary API key)
-    try:
-        out = await _try_groq(GROQ_PRIMARY_MODEL, GROQ_PRIMARY_API_KEY, user_prompt, system_prompt)
-        if out:
-            return out
-    except Exception as e:
-        attempts.append((f"groq/{GROQ_PRIMARY_MODEL}", str(e)[:120]))
-        logger.warning(f"LLM primary '{GROQ_PRIMARY_MODEL}' failed: {e}")
-        await asyncio.sleep(3)
+    # Tier 2 — Groq fallback
+    if _model_ready(GROQ_FALLBACK_MODEL):
+        try:
+            out = await _try_groq(GROQ_FALLBACK_MODEL, GROQ_FALLBACK_API_KEY, user_prompt, system_prompt)
+            if out:
+                logger.info(f"LLM fallback to '{GROQ_FALLBACK_MODEL}' succeeded.")
+                _llm_health.update({"status": "degraded", "last_error": f"primary {GROQ_PRIMARY_MODEL} rate-limited", "checked_at": datetime.now(timezone.utc).isoformat()})
+                _persist_llm_health(state)
+                return out
+        except Exception as e:
+            attempts.append((f"groq/{GROQ_FALLBACK_MODEL}", str(e)[:120]))
+            if "429" in str(e) or "rate_limit" in str(e).lower():
+                _mark_rate_limited(GROQ_FALLBACK_MODEL, e)
+            else:
+                logger.warning(f"LLM fallback '{GROQ_FALLBACK_MODEL}' failed: {e}")
+            await asyncio.sleep(1)
+    else:
+        logger.debug(f"Skipping fallback '{GROQ_FALLBACK_MODEL}' — still in cooldown")
 
-    # Tier 2 — Groq fallback (Llama 3.3 with fallback API key — own rate budget)
-    try:
-        out = await _try_groq(GROQ_FALLBACK_MODEL, GROQ_FALLBACK_API_KEY, user_prompt, system_prompt)
-        if out:
-            logger.info(f"LLM fallback to '{GROQ_FALLBACK_MODEL}' succeeded.")
-            return out
-    except Exception as e:
-        attempts.append((f"groq/{GROQ_FALLBACK_MODEL}", str(e)[:120]))
-        logger.warning(f"LLM fallback '{GROQ_FALLBACK_MODEL}' failed: {e}")
-        await asyncio.sleep(3)
-
-    # Tier 3 — Gemini (different provider, last resort)
+    # Tier 3 — Gemini (last resort)
     try:
         out = await _try_gemini(user_prompt, system_prompt)
         if out:
-            logger.info(f"LLM last-resort fallback to '{GEMINI_MODEL}' succeeded.")
+            logger.warning(f"BOTH GROQ TIERS RATE-LIMITED — using Gemini fallback ({GEMINI_MODEL}).")
+            _llm_health.update({"status": "gemini_only", "last_error": "both Groq tiers rate-limited", "checked_at": datetime.now(timezone.utc).isoformat()})
+            _persist_llm_health(state)
             return out
     except Exception as e:
         attempts.append((f"gemini/{GEMINI_MODEL}", str(e)[:120]))
         logger.warning(f"LLM last-resort '{GEMINI_MODEL}' failed: {e}")
 
-    logger.error(f"All LLM tiers failed. Attempts: {attempts}")
+    err_summary = "; ".join(f"{lbl}: {err}" for lbl, err in attempts) or "no providers attempted"
+    logger.error(f"ALL LLM TIERS FAILED. Attempts: {err_summary}")
+    _llm_health.update({
+        "status": "critical",
+        "last_error": err_summary,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "cooldowns": {m: max(0, int(t - time.monotonic())) for m, t in _model_cooldowns.items()},
+    })
+    _persist_llm_health(state)
     return None
+
+
+def get_llm_health() -> dict[str, Any]:
+    """Expose current LLM status + active cooldowns to the API server."""
+    snap = dict(_llm_health)
+    snap["cooldowns"] = {
+        m: max(0, int(t - time.monotonic())) for m, t in _model_cooldowns.items()
+        if t > time.monotonic()
+    }
+    return snap
+
+
+def _persist_llm_health(state: dict[str, Any]) -> None:
+    """The bot and api_server are different processes — write health into bot_state.json
+    so the dashboard can read it."""
+    try:
+        state["llm_health"] = get_llm_health()
+        save_state(state)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

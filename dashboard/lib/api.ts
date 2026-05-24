@@ -172,6 +172,17 @@ export function getCookieStatus() {
   return json<CookieStatusResponse>("/api/cookie_status");
 }
 
+export interface LLMHealthResponse {
+  status: "ok" | "degraded" | "gemini_only" | "critical" | "unknown";
+  last_error: string | null;
+  checked_at: string | null;
+  cooldowns: Record<string, number>; // model -> seconds remaining
+}
+
+export function getLLMHealth() {
+  return json<LLMHealthResponse>("/api/llm_health");
+}
+
 export interface OptimalHoursResponse {
   current_peak_hours: number[];
   recommended_peak_hours: number[];

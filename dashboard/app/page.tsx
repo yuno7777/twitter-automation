@@ -2,13 +2,14 @@
 
 import useSWR from "swr";
 import { useEffect, useState } from "react";
-import { Play, Pause, Square, RotateCcw, MessageCircle, MessagesSquare, UserPlus, Cpu, Heart, AlertTriangle, Cookie, ShieldAlert } from "lucide-react";
+import { Play, Pause, Square, RotateCcw, MessageCircle, MessagesSquare, UserPlus, Cpu, Heart, AlertTriangle, Cookie, ShieldAlert, Brain } from "lucide-react";
 import {
   controlBot,
   CookieStatusResponse,
   fetcher,
   FollowHistoryItem,
   HealthResponse,
+  LLMHealthResponse,
   ReplyHistoryItem,
   StatsResponse,
   StatusResponse,
@@ -71,6 +72,7 @@ export default function OverviewPage() {
   const { data: follows } = useSWR<FollowHistoryItem[]>("/api/history/follows", fetcher, { refreshInterval: 10000 });
   const { data: health } = useSWR<HealthResponse>("/api/health", fetcher, { refreshInterval: 30000 });
   const { data: cookie } = useSWR<CookieStatusResponse>("/api/cookie_status", fetcher, { refreshInterval: 60000 });
+  const { data: llm } = useSWR<LLMHealthResponse>("/api/llm_health", fetcher, { refreshInterval: 15000 });
 
   const s = status?.status ?? "stopped";
 
@@ -136,6 +138,54 @@ export default function OverviewPage() {
               {health.consecutive_error_cycles} consecutive cycles with X errors. Resets on next clean cycle.
             </div>
           </div>
+        </div>
+      )}
+
+      {/* LLM cascade health — surfaces rate-limit + total-failure states */}
+      {llm && llm.status === "critical" && (
+        <div className="glass p-4 border-rose-500/50 bg-rose-500/10 flex items-start gap-3">
+          <Brain className="text-rose-300 shrink-0 mt-0.5" size={20} />
+          <div className="flex-1">
+            <div className="font-semibold text-rose-300">All LLM tiers exhausted</div>
+            <div className="text-xs text-muted mt-1">
+              Every model returned an error. Bot is generating nothing until limits reset.
+              {Object.keys(llm.cooldowns).length > 0 && (
+                <div className="mt-2 mono">
+                  Cooldowns:&nbsp;
+                  {Object.entries(llm.cooldowns).map(([m, s]) => (
+                    <span key={m} className="mr-3">{m}: <span className="text-rose-300">{s}s</span></span>
+                  ))}
+                </div>
+              )}
+              {llm.last_error && (
+                <div className="mt-2 mono text-[10px] opacity-70">{llm.last_error.slice(0, 200)}</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {llm && llm.status === "gemini_only" && (
+        <div className="glass p-4 border-amber-500/40 bg-amber-500/5 flex items-start gap-3">
+          <Brain className="text-amber-300 shrink-0 mt-0.5" size={20} />
+          <div className="flex-1">
+            <div className="font-semibold text-amber-300">Both Groq tiers rate-limited — running on Gemini only</div>
+            <div className="text-xs text-muted mt-1">
+              {Object.keys(llm.cooldowns).length > 0 && (
+                <span className="mono">
+                  Resets:&nbsp;
+                  {Object.entries(llm.cooldowns).map(([m, s]) => (
+                    <span key={m} className="mr-3">{m}: <span className="text-amber-300">{s}s</span></span>
+                  ))}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {llm && llm.status === "degraded" && (
+        <div className="glass p-3 border-lavender/30 bg-lavender/5 flex items-center gap-3 text-xs">
+          <Brain className="text-lavender shrink-0" size={16} />
+          <span className="text-lavender">Primary model rate-limited — falling back to Llama 3.3 transparently.</span>
         </div>
       )}
 

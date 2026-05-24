@@ -147,6 +147,42 @@ export function getCreatorIntel() {
   return json<CreatorIntelResponse>("/api/creator_intel");
 }
 
+export interface HealthResponse {
+  status: "ok" | "warning" | "critical" | "unknown";
+  follower_count: number | null;
+  delta: number;
+  warnings: { phrase: string; severity: string }[];
+  checked_at: string | null;
+  consecutive_error_cycles: number;
+  adaptive_backoff_multiplier: number;
+}
+
+export function getHealth() {
+  return json<HealthResponse>("/api/health");
+}
+
+export interface CookieStatusResponse {
+  exists: boolean;
+  age_days: number | null;
+  needs_refresh: boolean;
+  last_refresh: string | null;
+}
+
+export function getCookieStatus() {
+  return json<CookieStatusResponse>("/api/cookie_status");
+}
+
+export interface OptimalHoursResponse {
+  current_peak_hours: number[];
+  recommended_peak_hours: number[];
+  hour_scores: { hour: number; avg_likes: number; samples: number }[];
+  sample_size: number;
+}
+
+export function getOptimalHours() {
+  return json<OptimalHoursResponse>("/api/optimal_hours");
+}
+
 export interface DraftItem {
   id: string;
   kind: string;

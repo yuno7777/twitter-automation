@@ -266,6 +266,84 @@ def get_creator_intel() -> dict[str, Any]:
     return read_state().get("creator_intel", {})
 
 
+COOKIES_PATH = BOT_DIR / "cookies.json"
+
+
+@app.get("/api/cookie_status")
+def cookie_status() -> dict[str, Any]:
+    """Cookie age + refresh recommendation. Triggers banner in dashboard."""
+    if not COOKIES_PATH.exists():
+        return {"exists": False, "age_days": None, "needs_refresh": True, "last_refresh": None}
+    mtime = datetime.fromtimestamp(COOKIES_PATH.stat().st_mtime, tz=timezone.utc)
+    age_days = (datetime.now(timezone.utc) - mtime).days
+    return {
+        "exists": True,
+        "age_days": age_days,
+        "needs_refresh": age_days >= 30,
+        "last_refresh": mtime.isoformat(),
+    }
+
+
+@app.get("/api/health")
+def get_health() -> dict[str, Any]:
+    """Account health snapshot — feeds dashboard banner."""
+    s = read_state()
+    h = s.get("account_health", {}) or {}
+    return {
+        "status": h.get("status", "unknown"),
+        "follower_count": h.get("follower_count"),
+        "delta": h.get("delta", 0),
+        "warnings": h.get("warnings", []),
+        "checked_at": h.get("checked_at"),
+        "consecutive_error_cycles": s.get("consecutive_error_cycles", 0),
+        "adaptive_backoff_multiplier": min(8, 2 ** max(0, int(s.get("consecutive_error_cycles", 0)) - 1)) if s.get("consecutive_error_cycles", 0) else 1,
+    }
+
+
+@app.get("/api/optimal_hours")
+def optimal_hours() -> dict[str, Any]:
+    """Compute optimal posting hours from tweet history + engagement.
+    Uses the bot's own top_tweets snapshot (which has likes) cross-referenced with tweet_history (which has posted_at).
+    """
+    s = read_state()
+    tweet_history = s.get("tweet_history", [])
+    top_tweets = s.get("top_tweets", [])
+    top_lookup = {(t.get("text") or "").strip()[:80]: t.get("likes", 0) for t in top_tweets}
+
+    # Bucket by local hour, average likes
+    from collections import defaultdict
+    hour_likes: dict[int, list[int]] = defaultdict(list)
+    for t in tweet_history:
+        ts = t.get("posted_at")
+        if not ts:
+            continue
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
+        except Exception:
+            continue
+        text_key = (t.get("text") or "").strip()[:80]
+        likes = top_lookup.get(text_key, 0)
+        hour_likes[dt.hour].append(likes)
+
+    # Score per hour: avg likes (penalize hours with <2 samples)
+    scored = []
+    for hour, likes_list in hour_likes.items():
+        if not likes_list:
+            continue
+        avg = sum(likes_list) / len(likes_list)
+        scored.append({"hour": hour, "avg_likes": round(avg, 2), "samples": len(likes_list)})
+    scored.sort(key=lambda x: x["avg_likes"], reverse=True)
+    recommended = [s["hour"] for s in scored[:7]] if scored else []
+
+    current = os.getenv("PEAK_HOURS", "").strip()
+    return {
+        "current_peak_hours": [int(h) for h in current.split(",") if h.strip().isdigit()] if current else [],
+        "recommended_peak_hours": sorted(recommended),
+        "hour_scores": scored,
+        "sample_size": len(tweet_history),
+    }
+
+
 @app.get("/api/memory")
 def get_memory() -> dict[str, Any]:
     """Trend-discovery memory — last strategy, topics seen, repos tracked, queued trends."""

@@ -203,6 +203,44 @@ async def fetch_hackernews_ai(client: httpx.AsyncClient, limit: int = 30) -> lis
     return out
 
 
+_NEWSLETTER_FEEDS = [
+    ("AINews",        "https://buttondown.com/ainews/rss"),
+    ("Latent Space",  "https://www.latent.space/feed"),
+    ("BensBites",     "https://bensbites.beehiiv.com/feed"),
+    ("Smol AI",       "https://smol.ai/feed.xml"),
+    ("Import AI",     "https://importai.substack.com/feed"),
+]
+
+
+async def fetch_newsletters(client: httpx.AsyncClient, limit: int = 15) -> list[dict[str, Any]]:
+    """Pull recent items from curated AI newsletter RSS feeds. Returns flat list ranked by recency."""
+    out: list[dict[str, Any]] = []
+    for source_name, url in _NEWSLETTER_FEEDS:
+        try:
+            r = await client.get(url, timeout=10.0, follow_redirects=True,
+                                 headers={"User-Agent": "twit-auto/1.0"})
+            if r.status_code != 200:
+                continue
+            # Lightweight parse: pull <item>/<entry> titles + links from XML/Atom without bringing in another dep.
+            blocks = re.findall(r"<(item|entry)\b[^>]*>(.*?)</\1>", r.text, flags=re.DOTALL)
+            for _, body in blocks[:5]:
+                title_m = re.search(r"<title[^>]*>(.*?)</title>", body, flags=re.DOTALL)
+                link_m  = re.search(r"<link[^>]*?(?:>([^<]+)</link>|href=\"([^\"]+)\")", body)
+                if not title_m:
+                    continue
+                title = re.sub(r"<!\[CDATA\[|\]\]>", "", title_m.group(1)).strip()[:200]
+                link = ""
+                if link_m:
+                    link = (link_m.group(1) or link_m.group(2) or "").strip()
+                if not title:
+                    continue
+                out.append({"source": source_name, "title": title, "url": link})
+        except Exception as e:
+            logger.debug(f"Newsletter {source_name} failed: {e}")
+    logger.info(f"Newsletters: {len(out)} recent items from {len(_NEWSLETTER_FEEDS)} feeds")
+    return out[:limit]
+
+
 async def fetch_reddit_llm(client: httpx.AsyncClient, limit: int = 15) -> list[dict[str, Any]]:
     """Hot posts from r/LocalLLaMA. Public JSON endpoint, no auth, just needs a UA."""
     out: list[dict[str, Any]] = []
@@ -279,6 +317,10 @@ def _build_strategy_prompt(
         f"  - [r/{s['subreddit']} {s['score']} pts] {s['title']}"
         for s in signals.get("reddit", [])[:8]
     )
+    nl = "\n".join(
+        f"  - [{s['source']}] {s['title']}"
+        for s in signals.get("newsletters", [])[:10]
+    )
 
     trending_block = "\n".join(f"  - {t}" for t in trending_terms) or "  (none extracted)"
 
@@ -292,6 +334,9 @@ LIVE SIGNAL — HackerNews AI-relevant top stories:
 
 LIVE SIGNAL — Reddit hot in r/LocalLLaMA + r/singularity:
 {rd or "  (none)"}
+
+LIVE SIGNAL — Recent AI newsletters (AINews, Latent Space, BensBites, Smol AI, Import AI):
+{nl or "  (none)"}
 
 DETERMINISTICALLY EXTRACTED TRENDING TERMS (product names, repo names, projects
 mentioned across the signals — these are FRESH and SEARCHABLE on X right now):
@@ -437,8 +482,9 @@ async def synthesize_strategy(
         gh = await fetch_github_recent_hot(client)
         hn = await fetch_hackernews_ai(client)
         rd = await fetch_reddit_llm(client)
+        nl = await fetch_newsletters(client)
 
-    signals = {"github": gh, "hackernews": hn, "reddit": rd}
+    signals = {"github": gh, "hackernews": hn, "reddit": rd, "newsletters": nl}
 
     # Deterministic trending-term extraction — guaranteed real, signal-derived queries
     trending_terms_raw = extract_trending_terms(signals)
@@ -766,7 +812,8 @@ def _validate_strategy(s: dict[str, Any], signals: dict[str, list[dict[str, Any]
     # Tweet topics must reference a real source_url from signals
     valid_urls = {g["url"] for g in signals.get("github", [])} | \
                  {h["url"] for h in signals.get("hackernews", [])} | \
-                 {r["url"] for r in signals.get("reddit", [])}
+                 {r["url"] for r in signals.get("reddit", [])} | \
+                 {n["url"] for n in signals.get("newsletters", []) if n.get("url")}
     topics_out = []
     for t in s.get("tweet_topics") or []:
         if not isinstance(t, dict):

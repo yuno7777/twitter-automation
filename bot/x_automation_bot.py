@@ -588,13 +588,23 @@ async def jitter(min_s: float = 0.5, max_s: float = 3.0) -> None:
     await asyncio.sleep(random.uniform(min_s, max_s))
 
 
+def _adaptive_multiplier(state: dict[str, Any]) -> float:
+    """Multiplier for cooldowns based on consecutive error cycles.
+    1 -> 1x · 2 -> 2x · 3 -> 4x · 4+ -> 8x (capped)."""
+    err = int(state.get("consecutive_error_cycles", 0) or 0)
+    if err <= 0:
+        return 1.0
+    return float(min(8, 2 ** (err - 1)))
+
+
 async def long_wait(min_min: float, max_min: float, state: dict[str, Any], reason: str) -> None:
-    minutes = random.uniform(min_min, max_min)
+    mult = _adaptive_multiplier(state)
+    minutes = random.uniform(min_min, max_min) * mult
     seconds = minutes * 60
-    set_action(state, f"{reason} (~{int(minutes)} min)")
-    logger.info(f"Sleeping {minutes:.1f} min — {reason}")
+    label = f"{reason} (~{int(minutes)} min{f', backoff x{mult:.0f}' if mult > 1 else ''})"
+    set_action(state, label)
+    logger.info(f"Sleeping {minutes:.1f} min — {reason}{f' (backoff x{mult:.0f})' if mult > 1 else ''}")
     end = time.monotonic() + seconds
-    # Check control flag every 5s — fast enough for the Reset Cycle button to feel snappy
     while time.monotonic() < end:
         if check_control_flag() == "stopped":
             logger.info("Stop flag detected during long wait — aborting.")
@@ -926,7 +936,78 @@ async def post_tweet(page: Page, text: str) -> bool:
     return await post_thread(page, [text])
 
 
-async def post_thread(page: Page, tweets: list[str]) -> bool:
+_OG_IMAGE_RE = re.compile(
+    r'<meta\s+(?:[^>]*?\s+)?(?:property|name)\s*=\s*["\'](?:og:image|twitter:image)["\'][^>]*?content\s*=\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+_OG_IMAGE_RE_REV = re.compile(
+    r'<meta\s+(?:[^>]*?\s+)?content\s*=\s*["\']([^"\']+)["\'][^>]*?(?:property|name)\s*=\s*["\'](?:og:image|twitter:image)["\']',
+    re.IGNORECASE,
+)
+_OG_IMAGE_CACHE: dict[str, Path | None] = {}  # url -> downloaded path (or None if no image)
+
+
+async def fetch_og_image(url: str) -> Path | None:
+    """Fetch <meta property=og:image> from a URL, download to temp, return Path.
+    Best-effort. Returns None if no image, network error, or unsupported format."""
+    if not url or not url.startswith("http"):
+        return None
+    if url in _OG_IMAGE_CACHE:
+        return _OG_IMAGE_CACHE[url]
+
+    import httpx
+    out_path: Path | None = None
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True,
+                                     headers={"User-Agent": USER_AGENT}) as client:
+            r = await client.get(url)
+            if r.status_code != 200:
+                _OG_IMAGE_CACHE[url] = None
+                return None
+            html = r.text[:200_000]  # cap so we don't parse huge pages
+            m = _OG_IMAGE_RE.search(html) or _OG_IMAGE_RE_REV.search(html)
+            if not m:
+                _OG_IMAGE_CACHE[url] = None
+                return None
+            img_url = m.group(1).strip()
+            if img_url.startswith("//"):
+                img_url = "https:" + img_url
+            elif img_url.startswith("/"):
+                from urllib.parse import urlparse, urlunparse
+                p = urlparse(url)
+                img_url = urlunparse((p.scheme, p.netloc, img_url, "", "", ""))
+            # Skip unsupported / tiny placeholder images
+            if any(x in img_url.lower() for x in (".svg", "1x1.", "spacer", "pixel.gif")):
+                _OG_IMAGE_CACHE[url] = None
+                return None
+
+            ir = await client.get(img_url)
+            if ir.status_code != 200 or len(ir.content) < 2048:
+                _OG_IMAGE_CACHE[url] = None
+                return None
+
+            ext = ".jpg"
+            ctype = (ir.headers.get("content-type") or "").lower()
+            if "png" in ctype: ext = ".png"
+            elif "webp" in ctype: ext = ".webp"
+            elif "gif" in ctype: ext = ".gif"
+            elif ".png" in img_url.lower(): ext = ".png"
+            elif ".webp" in img_url.lower(): ext = ".webp"
+
+            out_dir = BOT_DIR / "og_images"
+            out_dir.mkdir(exist_ok=True)
+            out_path = out_dir / f"og_{int(time.time()*1000)}{ext}"
+            out_path.write_bytes(ir.content)
+            logger.info(f"OG image fetched for tweet: {out_path.name} ({len(ir.content)//1024}KB)")
+    except Exception as e:
+        logger.debug(f"OG image fetch failed for {url}: {e}")
+        out_path = None
+
+    _OG_IMAGE_CACHE[url] = out_path
+    return out_path
+
+
+async def post_thread(page: Page, tweets: list[str], image_path: Path | None = None) -> bool:
     """Post 1-N tweets as a single thread using X's native + button."""
     if not tweets:
         return False
@@ -953,6 +1034,22 @@ async def post_thread(page: Page, tweets: list[str]) -> bool:
             sel = f'[role="dialog"] [data-testid="tweetTextarea_{i}"]'
             await human_type(page, sel, t)
             await jitter(1, 3)
+
+            # Attach OG image to the FIRST tweet of the thread only — X shows it best there.
+            if i == 0 and image_path and image_path.exists():
+                try:
+                    file_input = await page.query_selector('[role="dialog"] [data-testid="fileInput"]')
+                    if not file_input:
+                        # Some X builds nest it differently
+                        file_input = await page.query_selector('input[type="file"][accept*="image"]')
+                    if file_input:
+                        await file_input.set_input_files(str(image_path))
+                        # Wait for X to process the image preview
+                        await jitter(3, 6)
+                        logger.info(f"Image attached: {image_path.name}")
+                except Exception as e:
+                    logger.warning(f"Image upload failed (posting without image): {e}")
+
             if i < len(tweets) - 1:
                 # Add next tweet to thread
                 try:
@@ -1068,6 +1165,75 @@ async def like_recent_tweets(page: Page, state: dict[str, Any], max_likes: int, 
 # Self-engagement scrape — read own profile, find top-performing tweets
 # ---------------------------------------------------------------------------
 
+async def check_account_health(page: Page, state: dict[str, Any]) -> dict[str, Any]:
+    """Scrape own profile for follower count + suspension/limited warnings.
+    Returns {status: ok|warning|critical, follower_count, delta, warnings}.
+    On critical, sets state.status = 'paused' so the bot stops acting."""
+    if not X_HANDLE:
+        return {"status": "ok", "follower_count": None, "delta": 0, "warnings": []}
+    health: dict[str, Any] = {"status": "ok", "follower_count": None, "delta": 0, "warnings": []}
+    try:
+        await page.goto(f"https://x.com/{X_HANDLE}", wait_until="domcontentloaded", timeout=30000)
+        await jitter(2, 4)
+
+        # Body text scan for known warning phrases
+        try:
+            body_text = (await page.inner_text("body"))[:4000].lower()
+        except Exception:
+            body_text = ""
+        warning_signals = [
+            ("account suspended", "critical"),
+            ("your account is locked", "critical"),
+            ("verify your account", "warning"),
+            ("temporarily limited", "warning"),
+            ("unusual activity", "warning"),
+            ("we need to verify", "warning"),
+        ]
+        for phrase, severity in warning_signals:
+            if phrase in body_text:
+                health["warnings"].append({"phrase": phrase, "severity": severity})
+                if severity == "critical":
+                    health["status"] = "critical"
+                elif health["status"] != "critical":
+                    health["status"] = "warning"
+
+        # Follower count — look for anchor with /followers, parse first parent number
+        try:
+            link = await page.query_selector(f'a[href="/{X_HANDLE}/followers"], a[href="/{X_HANDLE}/verified_followers"]')
+            if link:
+                txt = (await link.inner_text()).strip()
+                # First token is usually the count (e.g. "123 Followers")
+                first = txt.split()[0] if txt else "0"
+                health["follower_count"] = _parse_count(first)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"Account health scrape failed: {e}")
+        return {"status": "ok", "follower_count": None, "delta": 0, "warnings": [{"phrase": "scrape failed", "severity": "info"}]}
+
+    # Compare against last snapshot
+    prior = state.get("account_health", {}) or {}
+    prior_count = prior.get("follower_count")
+    if health["follower_count"] is not None and prior_count is not None:
+        delta = health["follower_count"] - prior_count
+        health["delta"] = delta
+        if delta <= -10:  # sudden drop of 10+
+            health["warnings"].append({"phrase": f"follower drop {delta}", "severity": "warning"})
+            if health["status"] == "ok":
+                health["status"] = "warning"
+
+    health["checked_at"] = datetime.now(timezone.utc).isoformat()
+    state["account_health"] = health
+
+    if health["status"] == "critical":
+        logger.error(f"ACCOUNT HEALTH CRITICAL: {health['warnings']} — pausing bot.")
+        state["status"] = "paused"
+    elif health["status"] == "warning":
+        logger.warning(f"Account health warning: {health['warnings']}")
+    save_state(state)
+    return health
+
+
 async def scrape_own_top_tweets(page: Page, state: dict[str, Any]) -> None:
     """Visit own profile, scrape recent tweets + like counts, store top 5 in state.top_tweets."""
     if not X_HANDLE:
@@ -1135,9 +1301,11 @@ async def discover_reply_candidates(page: Page, query: str) -> list[TweetCandida
             pass
         if any(s in body_text for s in ("Something went wrong", "Try reloading", "Rate limit")):
             logger.warning(f"X showed an error page for '{query}' — likely throttled. Cooling down.")
+            state["_cycle_error_count"] = int(state.get("_cycle_error_count", 0)) + 1
             await jitter(30, 60)
         else:
             logger.warning(f"No tweets loaded for query '{query}': {e}")
+            state["_cycle_error_count"] = int(state.get("_cycle_error_count", 0)) + 1
         try:
             await page.screenshot(path=str(SCREENSHOT_DIR / f"search_empty_{int(time.time())}.png"))
         except Exception:
@@ -1455,6 +1623,53 @@ class UserCandidate:
     element_handle: Any = None
 
 
+async def discover_followers_of_creator(page: Page, creator_handle: str) -> list[UserCandidate]:
+    """Scrape the followers page of a tracked creator — same niche, much higher follow-back rate
+    than generic search. Falls back gracefully if X requires auth gate to view."""
+    creator_handle = creator_handle.lstrip("@").strip()
+    if not creator_handle:
+        return []
+    url = f"https://x.com/{creator_handle}/followers"
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await jitter(3, 5)
+        await page.wait_for_selector(SELECTORS["user_cell"], timeout=12000)
+    except Exception as e:
+        logger.warning(f"Could not load followers of @{creator_handle}: {e}")
+        return []
+
+    # Light scroll for more cells
+    for _ in range(2):
+        await page.mouse.wheel(0, random.randint(500, 900))
+        await jitter(1, 2)
+
+    cells = await page.query_selector_all(SELECTORS["user_cell"])
+    out: list[UserCandidate] = []
+    for cell in cells[:25]:
+        try:
+            cell_text = await cell.inner_text()
+            m = re.search(r"@(\w{2,20})", cell_text)
+            if not m:
+                continue
+            username = m.group(1)
+            if username.lower() == creator_handle.lower():
+                continue  # skip the creator themselves
+            follower_text = ""
+            fmatch = re.search(r"([\d.,KMB]+)\s+Followers", cell_text, re.IGNORECASE)
+            if fmatch:
+                follower_text = fmatch.group(1)
+            out.append(UserCandidate(
+                username=username,
+                bio=cell_text[:200],
+                follower_text=follower_text,
+                element_handle=cell,
+            ))
+        except Exception:
+            continue
+    logger.info(f"Followers-of-creator @{creator_handle}: {len(out)} candidates")
+    return out
+
+
 async def discover_user_candidates(page: Page, query: str) -> list[UserCandidate]:
     url = f"https://x.com/search?q={quote_plus(query)}&f=user"
     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -1536,6 +1751,8 @@ async def run_cycle(state: dict[str, Any]) -> None:
     likes_made = 0
     quotes_made = 0
     follow_ups_made = 0
+    # Errors observed THIS cycle. Bumped when search throttle / empty / X error pages occur.
+    state["_cycle_error_count"] = 0
 
     is_peak = in_peak_hour()
     if not is_peak:
@@ -1556,6 +1773,14 @@ async def run_cycle(state: dict[str, Any]) -> None:
             if not ok:
                 logger.warning("UI health check failed — skipping all actions this cycle.")
                 return
+
+            # Account health check — pauses bot if X shows suspension / limit warnings
+            set_action(state, "Checking account health")
+            health = await check_account_health(page, state)
+            if health["status"] == "critical":
+                logger.error("Bot paused due to account health critical — exiting cycle.")
+                return
+            await jitter(2, 4)
 
             # Self-engagement scrape (drives top-tweet feedback into next prompt)
             set_action(state, "Scraping own engagement")
@@ -1718,8 +1943,17 @@ async def run_cycle(state: dict[str, Any]) -> None:
                             save_state(state)
                         continue
 
-                    set_action(state, f"Posting {kind} thread {i+1} ({len(thread)} tweet(s))")
-                    if await post_thread(page, thread):
+                    # Best-effort OG image fetch from the source URL
+                    image_path = None
+                    src_url = data.link if kind == "rss" else data.get("source_url", "")
+                    if src_url:
+                        try:
+                            image_path = await fetch_og_image(src_url)
+                        except Exception as e:
+                            logger.debug(f"OG image fetch failed: {e}")
+
+                    set_action(state, f"Posting {kind} thread {i+1} ({len(thread)} tweet(s)){' +image' if image_path else ''}")
+                    if await post_thread(page, thread, image_path=image_path):
                         posts_made += 1
                         state["stats"]["total_tweets"] += 1
                         state["tweet_history"].insert(0, {
@@ -1939,11 +2173,20 @@ async def run_cycle(state: dict[str, Any]) -> None:
                     return
                 await long_wait(10, 12, state, "Cooldown before follow discovery")
 
-                follow_pool = strategy.get("follow_queries") or FOLLOW_SEARCH_QUERIES
-                query = random.choice(follow_pool)
-                set_action(state, f"Searching users for '{query}'")
-                users = await discover_user_candidates(page, query)
-                record_query_run(state, query, "follow", len(users))
+                # 50/50 split each cycle: follower-of-creator vs query search.
+                # Follower-of-followers tends to convert 2-3x better than generic search.
+                use_creator_followers = bool(CREATORS_TO_STUDY) and random.random() < 0.6
+                if use_creator_followers:
+                    creator = random.choice(CREATORS_TO_STUDY)
+                    set_action(state, f"Discovering followers of @{creator}")
+                    users = await discover_followers_of_creator(page, creator)
+                    record_query_run(state, f"followers-of:@{creator}", "follow", len(users))
+                else:
+                    follow_pool = strategy.get("follow_queries") or FOLLOW_SEARCH_QUERIES
+                    query = random.choice(follow_pool)
+                    set_action(state, f"Searching users for '{query}'")
+                    users = await discover_user_candidates(page, query)
+                    record_query_run(state, query, "follow", len(users))
                 users = [u for u in users if u.username not in state["followed_usernames"]]
 
                 target = random.randint(1, MAX_FOLLOWS_PER_CYCLE)
@@ -1967,11 +2210,25 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         break
                     await long_wait(10, 12, state, "Spacing between follows")
 
+            # Adaptive cooldown counter: bump if 2+ errors this cycle, reset if clean
+            cycle_errors = int(state.get("_cycle_error_count", 0) or 0)
+            prev_consec = int(state.get("consecutive_error_cycles", 0) or 0)
+            if cycle_errors >= 2:
+                state["consecutive_error_cycles"] = prev_consec + 1
+                logger.warning(
+                    f"Cycle had {cycle_errors} errors — consecutive_error_cycles "
+                    f"now {state['consecutive_error_cycles']} (next cycle cooldowns x{_adaptive_multiplier(state):.0f})"
+                )
+            elif prev_consec > 0:
+                logger.info(f"Clean cycle — resetting consecutive_error_cycles from {prev_consec} to 0")
+                state["consecutive_error_cycles"] = 0
+            save_state(state)
+
             logger.info(
                 f"Cycle complete. Posts: {posts_made} | Replies: {replies_made} | "
                 f"Likes: {likes_made} | Quotes: {quotes_made} | "
                 f"Follow-ups: {follow_ups_made} | Follows: {follows_made} | "
-                f"LLM calls: {state['stats']['llm_calls_today']} | "
+                f"LLM calls: {state['stats']['llm_calls_today']} | Errors: {cycle_errors} | "
                 f"Peak hour: {is_peak} | Next cycle in ~{CYCLE_INTERVAL_HOURS}h"
             )
 

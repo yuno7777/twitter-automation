@@ -13,7 +13,7 @@ import {
   YAxis,
   Legend,
 } from "recharts";
-import { AnalyticsResponse, fetcher } from "@/lib/api";
+import { AnalyticsResponse, fetcher, OptimalHoursResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const RANGES = [7, 14, 30] as const;
@@ -25,6 +25,7 @@ export default function AnalyticsPage() {
     fetcher,
     { refreshInterval: 30000 }
   );
+  const { data: optimal } = useSWR<OptimalHoursResponse>("/api/optimal_hours", fetcher, { refreshInterval: 60000 });
 
   if (!data) {
     return <div className="text-muted text-sm">Loading analytics…</div>;
@@ -142,6 +143,34 @@ export default function AnalyticsPage() {
           })}
         </div>
       </section>
+
+      {/* Optimal posting hours — auto-detected from engagement */}
+      {optimal && optimal.recommended_peak_hours.length > 0 && (
+        <section className="glass p-6">
+          <h2 className="text-lg font-semibold mb-1">Optimal posting hours</h2>
+          <p className="text-xs text-muted mb-4">
+            Auto-detected from your own engagement data ({optimal.sample_size} tweets analyzed). Update <code className="mono">PEAK_HOURS</code> in <code className="mono">.env</code> to apply.
+          </p>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <div className="text-xs text-muted uppercase tracking-widest mb-2">Current</div>
+              <div className="flex flex-wrap gap-1.5">
+                {optimal.current_peak_hours.map((h) => (
+                  <span key={h} className="mono px-2 py-0.5 rounded bg-white/5 border border-border text-xs">{h}:00</span>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-emerald-300 uppercase tracking-widest mb-2">Recommended</div>
+              <div className="flex flex-wrap gap-1.5">
+                {optimal.recommended_peak_hours.map((h) => (
+                  <span key={h} className="mono px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs">{h}:00</span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Top tweets */}
       <section className="glass p-6">

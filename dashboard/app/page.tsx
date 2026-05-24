@@ -2,11 +2,13 @@
 
 import useSWR from "swr";
 import { useEffect, useState } from "react";
-import { Play, Pause, Square, RotateCcw, MessageCircle, MessagesSquare, UserPlus, Cpu, Heart } from "lucide-react";
+import { Play, Pause, Square, RotateCcw, MessageCircle, MessagesSquare, UserPlus, Cpu, Heart, AlertTriangle, Cookie, ShieldAlert } from "lucide-react";
 import {
   controlBot,
+  CookieStatusResponse,
   fetcher,
   FollowHistoryItem,
+  HealthResponse,
   ReplyHistoryItem,
   StatsResponse,
   StatusResponse,
@@ -67,6 +69,8 @@ export default function OverviewPage() {
   const { data: tweets } = useSWR<TweetHistoryItem[]>("/api/history/tweets", fetcher, { refreshInterval: 10000 });
   const { data: replies } = useSWR<ReplyHistoryItem[]>("/api/history/replies", fetcher, { refreshInterval: 10000 });
   const { data: follows } = useSWR<FollowHistoryItem[]>("/api/history/follows", fetcher, { refreshInterval: 10000 });
+  const { data: health } = useSWR<HealthResponse>("/api/health", fetcher, { refreshInterval: 30000 });
+  const { data: cookie } = useSWR<CookieStatusResponse>("/api/cookie_status", fetcher, { refreshInterval: 60000 });
 
   const s = status?.status ?? "stopped";
 
@@ -96,6 +100,60 @@ export default function OverviewPage() {
         <h1 className="text-3xl font-bold tracking-tight">Overview</h1>
         <p className="text-muted text-sm">Real-time view of your Twitter Growth System.</p>
       </header>
+
+      {/* Health banner — critical if X is showing suspension warnings */}
+      {health && health.status === "critical" && (
+        <div className="glass p-4 border-rose-500/50 bg-rose-500/10 flex items-start gap-3">
+          <ShieldAlert className="text-rose-300 shrink-0 mt-0.5" size={20} />
+          <div className="flex-1">
+            <div className="font-semibold text-rose-300">Account health critical — bot auto-paused</div>
+            <div className="text-xs text-muted mt-1">
+              X showed: {health.warnings.map((w) => w.phrase).join(" · ")}
+            </div>
+          </div>
+        </div>
+      )}
+      {health && health.status === "warning" && (
+        <div className="glass p-4 border-amber-500/50 bg-amber-500/10 flex items-start gap-3">
+          <AlertTriangle className="text-amber-300 shrink-0 mt-0.5" size={20} />
+          <div className="flex-1">
+            <div className="font-semibold text-amber-300">Account health warning</div>
+            <div className="text-xs text-muted mt-1">
+              {health.warnings.map((w) => w.phrase).join(" · ")}
+              {health.delta < 0 && <span> · follower change {health.delta}</span>}
+            </div>
+          </div>
+        </div>
+      )}
+      {health && health.consecutive_error_cycles >= 2 && (
+        <div className="glass p-4 border-amber-500/40 bg-amber-500/5 flex items-start gap-3">
+          <AlertTriangle className="text-amber-300 shrink-0 mt-0.5" size={20} />
+          <div className="flex-1">
+            <div className="font-semibold text-amber-300">
+              Adaptive backoff active — cooldowns x{health.adaptive_backoff_multiplier}
+            </div>
+            <div className="text-xs text-muted mt-1">
+              {health.consecutive_error_cycles} consecutive cycles with X errors. Resets on next clean cycle.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cookie freshness — banner after 30 days */}
+      {cookie && cookie.needs_refresh && (
+        <div className="glass p-4 border-lavender/40 bg-lavender/5 flex items-start gap-3">
+          <Cookie className="text-lavender shrink-0 mt-0.5" size={20} />
+          <div className="flex-1">
+            <div className="font-semibold text-lavender">
+              {cookie.exists ? "Cookies aging — refresh recommended" : "No cookies — login required"}
+            </div>
+            <div className="text-xs text-muted mt-1">
+              {cookie.exists && (<>Last refreshed {cookie.age_days} days ago. </>)}
+              Run <code className="mono bg-black/60 px-1.5 py-0.5 rounded">$env:HEADLESS=&quot;false&quot;; python x_automation_bot.py login</code> to re-auth.
+            </div>
+          </div>
+        </div>
+      )}
 
       <section className="glass p-6 flex flex-col md:flex-row items-start md:items-center gap-6 justify-between">
         <div className="flex flex-col gap-3">

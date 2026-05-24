@@ -668,16 +668,24 @@ Rate this draft on 1-10 scales:
 - hook: how strong is the opening?
 - voice_match: does this sound like the niche/voice above, or generic AI slop?
 - value: does it actually say something interesting?
+- grounding: is every claim supported, with concrete names / a source link? (cap overall score at 6 if grounding < 7)
 
-Then give an overall score (1-10). 7+ = post it. Under 7 = needs regeneration.
+CRITICAL GROUNDING CHECKS — auto-flag and lower the score:
+- Mentions a product/model/repo without a URL or clear source -> flag "missing source link, ambiguous reference"
+- Sounds like an announcement of an official release when the source is a community repo or HN post -> flag "presents a side-project as an official launch"
+- States specific numbers (parameter counts, benchmarks, dates, version) that aren't obviously sourced -> flag "unverifiable specific claim"
+- A name that sounds like an Anthropic/OpenAI/Google product but is actually a third-party repo (e.g. 'Claude Mythos', 'GPT-OSS-Studio') -> flag "ambiguous name, must clarify it's a community project"
 
-List specific issues (banned words used, weak hook, generic phrasing, LinkedIn energy, hashtag spam, etc.).
+Then give an overall score (1-10). 7+ = post it. Under 7 = regenerate.
+
+List specific issues (banned words, weak hook, generic phrasing, LinkedIn energy, hashtag spam, MISSING SOURCE LINK, AMBIGUOUS PRODUCT NAME, etc.).
 
 Return JSON only:
 {{
   "hook": <int 1-10>,
   "voice_match": <int 1-10>,
   "value": <int 1-10>,
+  "grounding": <int 1-10>,
   "score": <int 1-10>,
   "issues": ["specific problem 1", "specific problem 2"],
   "verdict": "post" or "regenerate"
@@ -692,11 +700,16 @@ Return JSON only:
         score = int(parsed.get("score", 7))
     except Exception:
         score = 7
+    grounding = int(parsed.get("grounding", 7) or 7)
+    # Hard cap: if grounding is weak, cap overall score so the draft regenerates
+    if grounding < 7:
+        score = min(score, 6)
     return {
         "score": max(1, min(10, score)),
         "hook": int(parsed.get("hook", 7) or 7),
         "voice_match": int(parsed.get("voice_match", 7) or 7),
         "value": int(parsed.get("value", 7) or 7),
+        "grounding": max(1, min(10, grounding)),
         "issues": parsed.get("issues") or [],
         "verdict": parsed.get("verdict") or ("post" if score >= 7 else "regenerate"),
     }

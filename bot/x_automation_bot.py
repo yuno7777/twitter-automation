@@ -1000,9 +1000,11 @@ async def fetch_og_image(url: str) -> Path | None:
             out_path.write_bytes(ir.content)
             logger.info(f"OG image fetched for tweet: {out_path.name} ({len(ir.content)//1024}KB)")
     except Exception as e:
-        logger.debug(f"OG image fetch failed for {url}: {e}")
+        logger.warning(f"OG image fetch failed for {url}: {e}")
         out_path = None
 
+    if out_path is None:
+        logger.info(f"OG image: no usable image found at {url[:80]}")
     _OG_IMAGE_CACHE[url] = out_path
     return out_path
 
@@ -1038,15 +1040,31 @@ async def post_thread(page: Page, tweets: list[str], image_path: Path | None = N
             # Attach OG image to the FIRST tweet of the thread only — X shows it best there.
             if i == 0 and image_path and image_path.exists():
                 try:
-                    file_input = await page.query_selector('[role="dialog"] [data-testid="fileInput"]')
-                    if not file_input:
-                        # Some X builds nest it differently
-                        file_input = await page.query_selector('input[type="file"][accept*="image"]')
+                    file_input = None
+                    for sel in (
+                        '[role="dialog"] [data-testid="fileInput"]',
+                        '[data-testid="fileInput"]',
+                        '[role="dialog"] input[type="file"]',
+                        'input[type="file"][accept*="image"]',
+                        'input[type="file"]',
+                    ):
+                        try:
+                            file_input = await page.wait_for_selector(sel, state="attached", timeout=2000)
+                            if file_input:
+                                logger.debug(f"Found file input via selector: {sel}")
+                                break
+                        except Exception:
+                            continue
                     if file_input:
                         await file_input.set_input_files(str(image_path))
-                        # Wait for X to process the image preview
                         await jitter(3, 6)
-                        logger.info(f"Image attached: {image_path.name}")
+                        logger.info(f"Image attached to tweet: {image_path.name}")
+                    else:
+                        logger.warning(f"No file input selector matched — posting WITHOUT image. Take a screenshot to debug X's current DOM.")
+                        try:
+                            await page.screenshot(path=str(SCREENSHOT_DIR / f"no_file_input_{int(time.time())}.png"))
+                        except Exception:
+                            pass
                 except Exception as e:
                     logger.warning(f"Image upload failed (posting without image): {e}")
 
@@ -1854,8 +1872,16 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         break
                     if not await respect_control(state):
                         return
-                    set_action(state, f"Posting approved draft")
-                    if await post_thread(page, d["thread"]):
+                    # Fetch OG image from the draft's source URL (saved when drafted)
+                    image_path = None
+                    src = d.get("source_url", "")
+                    if src:
+                        try:
+                            image_path = await fetch_og_image(src)
+                        except Exception as e:
+                            logger.debug(f"OG fetch failed for draft {d.get('id')}: {e}")
+                    set_action(state, f"Posting approved draft{' +image' if image_path else ''}")
+                    if await post_thread(page, d["thread"], image_path=image_path):
                         posts_made += 1
                         state["stats"]["total_tweets"] += 1
                         state["tweet_history"].insert(0, {

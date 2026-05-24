@@ -28,6 +28,11 @@ Rules:
 - No "What do you think?" filler CTAs. If the hook is good, replies come.
 - PLAIN TEXT ONLY. No markdown.
 
+GROUNDING (do not violate):
+- Only state facts directly in the NEWS block below. No invented numbers, dates, capabilities, or company affiliations.
+- INCLUDE THE SOURCE LINK in the last tweet of the thread (URLs count ~23 chars toward the limit).
+- A name that sounds like a product but is from a community source is a SIDE PROJECT — say so.
+
 NEWS
 Title: {title}
 Summary: {summary}

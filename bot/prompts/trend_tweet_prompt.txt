@@ -15,20 +15,26 @@ STYLE MODE FOR THIS TWEET: {style_mode_name}
 {style_mode_instructions}
 
 TASK
-Take this current trending signal and turn it into a SHORT THREAD of 1-3 tweets that a builder would actually want to read. One tweet is fine if the angle is small; only use 2-3 if there's real substance to unpack.
+Take this CURRENT, REAL trending signal and turn it into a SHORT THREAD of 1-3 tweets that a builder would actually want to read. One tweet is fine if the angle is small; only use 2-3 if there's real substance to unpack.
 
-Rules:
-- Each tweet under 280 characters.
-- Tweet 1: hook from a specific angle — name the project/tool/person directly, no vague gestures.
-- Match the STYLE MODE above. The mode dictates the structure.
-- Lead with concrete detail (numbers, capabilities, what it actually does) not buzzwords.
+ABSOLUTE GROUNDING RULES (do not violate these)
+- Only write claims that are DIRECTLY supported by the SIGNAL block below. Nothing else.
+- If the signal is a GitHub repo, treat it as an open-source side-project unless explicitly proven otherwise. Do NOT imply it's an Anthropic / OpenAI / Google product.
+- Never invent release dates, version numbers, capabilities, benchmarks, or company associations.
+- Never use marketing words like "released", "launched", "drops" for a community repo — say "open-sourced", "shared on GitHub", or just "I came across".
+- If the angle is fuzzy or speculative, say so explicitly ("looks like", "could be", "interesting if real") instead of stating it as fact.
+- A repo named like a product (e.g. "Claude Mythos", "GPT-OSS-Studio") is almost always a third-party project, not an official model. Make that clear.
+- INCLUDE THE SOURCE URL inline in the thread. For 1-tweet threads, append the URL at the end. For multi-tweet threads, put the URL in the last tweet.
+
+Writing rules:
+- Each tweet under 280 characters (URLs count as ~23 chars).
+- Tweet 1: hook matching the STYLE MODE above. No throat-clearing.
+- Lead with concrete detail (the actual name/repo, what it does, who made it) not buzzwords.
 - ZERO hashtags. X algo penalizes them.
-- 0-2 emojis MAX across the whole thread. Zero is usually better.
-- Banned words: groundbreaking, revolutionary, game-changing, unlock, leverage, harness, dive deep, paradigm, elite, supercharge, in the era of.
-- Don't say "Just dropped" or "BREAKING:" or "Big news:". Just open with the take.
-- If it's a GitHub repo, name the repo (owner/name) and what's distinctive about it.
-- If it's a news story, lead with the implication for builders, not the headline.
-- Tone: confident, slightly opinionated, builder-to-builder. No press release energy.
+- 0-2 emojis MAX across the whole thread.
+- Banned words: groundbreaking, revolutionary, game-changing, unlock, leverage, harness, dive deep, paradigm, elite, supercharge.
+- Don't say "Just dropped" / "BREAKING:" / "Big news:".
+- Tone: confident, slightly opinionated, builder-to-builder.
 - PLAIN TEXT ONLY. No markdown.
 
 SIGNAL
@@ -37,6 +43,6 @@ Context: {context}
 Source: {source_url}
 
 OUTPUT FORMAT
-If 1 tweet: just the tweet text.
-If 2-3 tweets: separate each with a line containing only --- (three dashes).
+If 1 tweet: just the tweet text WITH the source URL.
+If 2-3 tweets: separate each with a line containing only --- (three dashes). The LAST tweet must contain the source URL.
 Nothing else.

@@ -123,12 +123,19 @@ def extract_trending_terms(signals: dict[str, list[dict[str, Any]]]) -> list[str
     return terms[:12]
 
 
-async def fetch_github_recent_hot(client: httpx.AsyncClient, days: int = 14, per_topic: int = 4) -> list[dict[str, Any]]:
+async def fetch_github_recent_hot(client: httpx.AsyncClient, days: int = 7, per_topic: int = 4) -> list[dict[str, Any]]:
     """For each AI topic, fetch recently created repos with the most stars.
-    No auth needed; rate-limited to 10 req/min unauth, we stay well under."""
+    No auth needed; rate-limited to 10 req/min unauth, we stay well under.
+
+    Tighter time window (7d default, was 14d) + randomized topic sample so each
+    cycle picks up different freshness slices of the long tail."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
     seen: dict[str, dict[str, Any]] = {}
-    for topic in _GITHUB_TOPICS:
+    # Sample 8 of N topics per cycle so we don't redundantly hit all topics every time —
+    # adds rotation/variety without sacrificing coverage over a few cycles.
+    import random as _random
+    sampled_topics = _random.sample(_GITHUB_TOPICS, min(8, len(_GITHUB_TOPICS)))
+    for topic in sampled_topics:
         q = f"topic:{topic} created:>{cutoff} stars:>5"
         url = "https://api.github.com/search/repositories"
         params = {"q": q, "sort": "stars", "order": "desc", "per_page": per_topic}
@@ -199,7 +206,14 @@ async def fetch_hackernews_ai(client: httpx.AsyncClient, limit: int = 30) -> lis
 async def fetch_reddit_llm(client: httpx.AsyncClient, limit: int = 15) -> list[dict[str, Any]]:
     """Hot posts from r/LocalLLaMA. Public JSON endpoint, no auth, just needs a UA."""
     out: list[dict[str, Any]] = []
-    for sub in ("LocalLLaMA", "singularity"):
+    # Rotate the sub list each cycle for variety; always include LocalLLaMA + ChatGPT as anchors.
+    import random as _random
+    extra = _random.sample(
+        ["singularity", "MachineLearning", "OpenAI", "ArtificialInteligence", "LLMDevs"],
+        2,
+    )
+    subs = ["LocalLLaMA", "ChatGPT"] + extra
+    for sub in subs:
         try:
             r = await client.get(
                 f"https://www.reddit.com/r/{sub}/hot.json?limit=15",
@@ -448,11 +462,32 @@ async def synthesize_strategy(
         strategy = _validate_strategy(parsed, signals)
 
     # Force-inject the deterministically extracted trending terms.
-    # Belt-and-suspenders: even if LLM ignored the instruction, real trending
-    # names still drive a chunk of the reply + like queries this cycle.
+    # Suppress terms the bot has used in the last 12 hours so search rotates instead
+    # of hammering the same handful of trending names every cycle.
     if trending_terms:
-        # Reply queries: prepend top 4 trending terms (deduped, keep LLM additions)
-        forced = trending_terms[:4]
+        recent_cutoff = datetime.now(timezone.utc) - timedelta(hours=12)
+        recently_used: set[str] = set()
+        for entry in (state.get("search_memory", {}).get("queries_run") or [])[-60:]:
+            try:
+                ts = datetime.fromisoformat((entry.get("ts") or "").replace("Z", "+00:00"))
+                if ts >= recent_cutoff:
+                    recently_used.add((entry.get("query") or "").strip().lower())
+            except Exception:
+                continue
+
+        # Prefer terms NOT recently used; fall back to recently-used only if we'd have nothing left
+        fresh_terms = [t for t in trending_terms if t.lower() not in recently_used]
+        stale_terms = [t for t in trending_terms if t.lower() in recently_used]
+        # Always inject some fresh; if pool is thin, allow a couple of stale at the end
+        ordered_pool = fresh_terms + stale_terms
+        if recently_used and fresh_terms:
+            logger.info(
+                f"Trending-term rotation: {len(fresh_terms)} fresh, "
+                f"{len(stale_terms)} recently used (suppressing stale)"
+            )
+
+        # Reply queries: prepend top 4 (preferring fresh)
+        forced = ordered_pool[:4]
         existing_lower = {q.lower() for q in strategy["reply_queries"]}
         for term in reversed(forced):
             if term.lower() not in existing_lower:
@@ -460,8 +495,8 @@ async def synthesize_strategy(
                 existing_lower.add(term.lower())
         strategy["reply_queries"] = strategy["reply_queries"][:10]
 
-        # Like queries: half of them should be trending terms too
-        like_forced = trending_terms[:3]
+        # Like queries: top 3 (preferring fresh)
+        like_forced = ordered_pool[:3]
         existing_lower = {q.lower() for q in strategy["like_queries"]}
         for term in reversed(like_forced):
             if term.lower() not in existing_lower:

@@ -29,6 +29,9 @@ export default function SettingsPage() {
     try {
       await updateSettings({
         llm_provider: draft.llm_provider,
+        groq_primary_model: draft.groq_primary_model,
+        groq_fallback_model: draft.groq_fallback_model,
+        gemini_model: draft.gemini_model,
         cycle_interval_hours: draft.cycle_interval_hours,
         max_posts_per_cycle: draft.max_posts_per_cycle,
         max_replies_per_cycle: draft.max_replies_per_cycle,
@@ -36,7 +39,7 @@ export default function SettingsPage() {
         tweet_prompt: draft.tweet_prompt,
         reply_prompt: draft.reply_prompt,
       });
-      toast.success("Settings saved");
+      toast.success("Settings saved — restart bot for changes to take effect");
       mutate();
     } catch (e: any) {
       toast.error(e.message || "Save failed");
@@ -44,6 +47,19 @@ export default function SettingsPage() {
       setSaving(false);
     }
   }
+
+  const GROQ_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "qwen/qwen3-32b",
+  ];
+  const GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.0-flash",
+  ];
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
@@ -65,20 +81,46 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      <section className="glass p-6 space-y-4">
-        <h2 className="font-semibold text-lg">LLM Provider</h2>
-        <div className="flex items-center gap-3">
-          <label className="text-sm text-muted">Primary provider</label>
-          <select
-            value={draft.llm_provider}
-            onChange={(e) => set("llm_provider", e.target.value)}
-            className="bg-black/60 border border-border rounded-lg px-3 py-2 text-sm"
-          >
-            <option value="groq">Groq</option>
-            <option value="gemini">Gemini</option>
-          </select>
+      <section className="glass p-6 space-y-5">
+        <div>
+          <h2 className="font-semibold text-lg">LLM Cascade</h2>
+          <p className="text-xs text-muted mt-1">
+            3-tier fallback: primary fails → tier 2 takes over → Gemini as last resort.
+            Each Groq tier can use its own API key for separate rate-limit budgets.
+          </p>
         </div>
-        <div className="text-xs text-muted">
+
+        <ModelField
+          label="Tier 1 — Groq primary"
+          help="Best reasoning + JSON. Used for strategy synthesis, critic, reply analyzer."
+          value={draft.groq_primary_model}
+          onChange={(v) => set("groq_primary_model", v)}
+          options={GROQ_MODELS}
+          keySet={draft.groq_primary_key_set}
+          keyEnv="GROQ_PRIMARY_API_KEY"
+        />
+
+        <ModelField
+          label="Tier 2 — Groq fallback"
+          help="Triggers on Tier 1 rate limit or error. Different model + (recommended) different API key."
+          value={draft.groq_fallback_model}
+          onChange={(v) => set("groq_fallback_model", v)}
+          options={GROQ_MODELS}
+          keySet={draft.groq_fallback_key_set}
+          keyEnv="GROQ_FALLBACK_API_KEY"
+        />
+
+        <ModelField
+          label="Tier 3 — Gemini (last resort)"
+          help="Different provider entirely. Only fires if both Groq tiers fail."
+          value={draft.gemini_model}
+          onChange={(v) => set("gemini_model", v)}
+          options={GEMINI_MODELS}
+          keySet={true}
+          keyEnv="GEMINI_API_KEY"
+        />
+
+        <div className="text-xs text-muted pt-2 border-t border-border">
           Proxy: {draft.proxy_configured ? "configured" : "not configured"} • Headless: {draft.headless} • Dry-run: {draft.dry_run}
         </div>
       </section>
@@ -135,5 +177,53 @@ function NumberField({
         className="bg-black/60 border border-border rounded-lg px-3 py-2 text-sm mono"
       />
     </label>
+  );
+}
+
+function ModelField({
+  label,
+  help,
+  value,
+  onChange,
+  options,
+  keySet,
+  keyEnv,
+}: {
+  label: string;
+  help: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  keySet: boolean;
+  keyEnv: string;
+}) {
+  // Allow free-text via combobox pattern — datalist of common options + raw input.
+  return (
+    <div className="space-y-2">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <label className="text-sm font-medium text-white">{label}</label>
+        <span className={
+          "text-[10px] uppercase tracking-widest px-2 py-0.5 rounded " +
+          (keySet
+            ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+            : "bg-rose-500/15 text-rose-300 border border-rose-500/30")
+        }>
+          {keySet ? "API key set" : `${keyEnv} missing`}
+        </span>
+      </div>
+      <p className="text-xs text-muted">{help}</p>
+      <input
+        list={`models-${keyEnv}`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full bg-black/60 border border-border rounded-lg px-3 py-2 text-sm mono"
+        placeholder="model id"
+      />
+      <datalist id={`models-${keyEnv}`}>
+        {options.map((m) => (
+          <option key={m} value={m} />
+        ))}
+      </datalist>
+    </div>
   );
 }

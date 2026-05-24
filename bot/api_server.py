@@ -81,6 +81,9 @@ class SettingsBody(BaseModel):
     max_posts_per_cycle: int | None = None
     max_replies_per_cycle: int | None = None
     max_follows_per_cycle: int | None = None
+    groq_primary_model: str | None = None
+    groq_fallback_model: str | None = None
+    gemini_model: str | None = None
     tweet_prompt: str | None = None
     reply_prompt: str | None = None
 
@@ -369,6 +372,11 @@ def get_settings() -> dict[str, Any]:
         pass
     return {
         "llm_provider": os.getenv("LLM_PROVIDER", "groq"),
+        "groq_primary_model": os.getenv("GROQ_PRIMARY_MODEL", "openai/gpt-oss-120b"),
+        "groq_fallback_model": os.getenv("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile"),
+        "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        "groq_primary_key_set": bool(os.getenv("GROQ_PRIMARY_API_KEY", "").strip() or os.getenv("GROQ_API_KEY", "").strip()),
+        "groq_fallback_key_set": bool(os.getenv("GROQ_FALLBACK_API_KEY", "").strip() or os.getenv("GROQ_API_KEY", "").strip()),
         "cycle_interval_hours": int(os.getenv("CYCLE_INTERVAL_HOURS", "5")),
         "max_posts_per_cycle": int(os.getenv("MAX_POSTS_PER_CYCLE", "3")),
         "max_replies_per_cycle": int(os.getenv("MAX_REPLIES_PER_CYCLE", "1")),
@@ -395,6 +403,12 @@ def update_settings(body: SettingsBody) -> dict[str, Any]:
         env_updates["MAX_REPLIES_PER_CYCLE"] = str(body.max_replies_per_cycle)
     if body.max_follows_per_cycle is not None:
         env_updates["MAX_FOLLOWS_PER_CYCLE"] = str(body.max_follows_per_cycle)
+    if body.groq_primary_model is not None:
+        env_updates["GROQ_PRIMARY_MODEL"] = body.groq_primary_model
+    if body.groq_fallback_model is not None:
+        env_updates["GROQ_FALLBACK_MODEL"] = body.groq_fallback_model
+    if body.gemini_model is not None:
+        env_updates["GEMINI_MODEL"] = body.gemini_model
 
     if not ENV_PATH.exists():
         ENV_PATH.write_text("", encoding="utf-8")

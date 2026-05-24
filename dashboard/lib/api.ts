@@ -43,6 +43,11 @@ export interface FollowHistoryItem {
 
 export interface BotSettings {
   llm_provider: string;
+  groq_primary_model: string;
+  groq_fallback_model: string;
+  gemini_model: string;
+  groq_primary_key_set: boolean;
+  groq_fallback_key_set: boolean;
   cycle_interval_hours: number;
   max_posts_per_cycle: number;
   max_replies_per_cycle: number;

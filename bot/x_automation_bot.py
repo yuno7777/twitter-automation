@@ -283,16 +283,23 @@ GROQ_PRIMARY_MODEL  = os.getenv("GROQ_PRIMARY_MODEL",  "openai/gpt-oss-120b")
 GROQ_FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile")
 GEMINI_MODEL        = os.getenv("GEMINI_MODEL",        "gemini-2.5-flash")
 
-_groq_client = None
+# Per-tier API keys — lets you split rate-limit budgets across two Groq accounts.
+# Falls back to the single GROQ_API_KEY if a tier-specific key isn't set.
+GROQ_PRIMARY_API_KEY  = os.getenv("GROQ_PRIMARY_API_KEY",  "").strip() or GROQ_API_KEY
+GROQ_FALLBACK_API_KEY = os.getenv("GROQ_FALLBACK_API_KEY", "").strip() or GROQ_API_KEY
+
+_groq_clients: dict[str, Any] = {}  # cache by API key
 _gemini_configured = False
 
 
-def _get_groq():
-    global _groq_client
-    if _groq_client is None and GROQ_API_KEY:
+def _get_groq(api_key: str | None):
+    """Get (or build) a Groq client for the given API key. Caches per-key."""
+    if not api_key:
+        return None
+    if api_key not in _groq_clients:
         from groq import Groq
-        _groq_client = Groq(api_key=GROQ_API_KEY)
-    return _groq_client
+        _groq_clients[api_key] = Groq(api_key=api_key)
+    return _groq_clients[api_key]
 
 
 def _configure_gemini():
@@ -303,8 +310,8 @@ def _configure_gemini():
         _gemini_configured = True
 
 
-async def _try_groq(model: str, user_prompt: str, system_prompt: str) -> str | None:
-    client = _get_groq()
+async def _try_groq(model: str, api_key: str | None, user_prompt: str, system_prompt: str) -> str | None:
+    client = _get_groq(api_key)
     if client is None:
         return None
     resp = await asyncio.to_thread(
@@ -338,9 +345,9 @@ async def call_llm(user_prompt: str, system_prompt: str, state: dict[str, Any]) 
 
     attempts: list[tuple[str, str]] = []  # (label, error preview)
 
-    # Tier 1 — Groq primary (GPT-OSS-120B)
+    # Tier 1 — Groq primary (GPT-OSS-120B with primary API key)
     try:
-        out = await _try_groq(GROQ_PRIMARY_MODEL, user_prompt, system_prompt)
+        out = await _try_groq(GROQ_PRIMARY_MODEL, GROQ_PRIMARY_API_KEY, user_prompt, system_prompt)
         if out:
             return out
     except Exception as e:
@@ -348,9 +355,9 @@ async def call_llm(user_prompt: str, system_prompt: str, state: dict[str, Any]) 
         logger.warning(f"LLM primary '{GROQ_PRIMARY_MODEL}' failed: {e}")
         await asyncio.sleep(3)
 
-    # Tier 2 — Groq fallback (Llama 3.3) — same provider, different model
+    # Tier 2 — Groq fallback (Llama 3.3 with fallback API key — own rate budget)
     try:
-        out = await _try_groq(GROQ_FALLBACK_MODEL, user_prompt, system_prompt)
+        out = await _try_groq(GROQ_FALLBACK_MODEL, GROQ_FALLBACK_API_KEY, user_prompt, system_prompt)
         if out:
             logger.info(f"LLM fallback to '{GROQ_FALLBACK_MODEL}' succeeded.")
             return out

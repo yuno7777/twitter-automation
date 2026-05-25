@@ -1620,13 +1620,13 @@ async def discover_reply_candidates(page: Page, query: str) -> list[TweetCandida
             body_text = (await page.inner_text("body"))[:500]
         except Exception:
             pass
+        # NOTE: `state` is not in scope here — error tracking is handled at the
+        # cycle level via try/except wrappers around this call. Just log and bail.
         if any(s in body_text for s in ("Something went wrong", "Try reloading", "Rate limit")):
             logger.warning(f"X showed an error page for '{query}' — likely throttled. Cooling down.")
-            state["_cycle_error_count"] = int(state.get("_cycle_error_count", 0)) + 1
             await jitter(30, 60)
         else:
             logger.warning(f"No tweets loaded for query '{query}': {e}")
-            state["_cycle_error_count"] = int(state.get("_cycle_error_count", 0)) + 1
         try:
             await page.screenshot(path=str(SCREENSHOT_DIR / f"search_empty_{int(time.time())}.png"))
         except Exception:
@@ -1756,7 +1756,11 @@ QUOTE_SEARCH_QUERIES = [
 
 async def discover_quote_candidates(page: Page, query: str) -> list[TweetCandidate]:
     """Find VIRAL fresh tweets to quote-tweet. Different filter than reply: high likes."""
-    cands = await discover_reply_candidates(page, query)
+    try:
+        cands = await discover_reply_candidates(page, query)
+    except Exception as e:
+        logger.warning(f"Quote search '{query}' failed (non-fatal): {e}")
+        return []
     # Quote candidates: 100-10000 likes (viral but not mega), under 4h old
     return [
         c for c in cands
@@ -1891,14 +1895,15 @@ async def gather_vip_candidates(
     handles: list[str],
     cap_per_handle: int = 3,
     warm_engagers: list[str] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> list[TweetCandidate]:
     """Walk a sample of VIP handles and pool their fresh tweets.
     Feature 6: warm engagers (recent likers/repliers to OUR tweets) get priority slots
     in the sample — replies to warm targets convert ~3-5x better than cold VIPs.
-    We sample ~6 per cycle (not all 50+) to keep cycle time reasonable."""
+    We sample ~8 per cycle and prioritize VIPs not yet at their daily cap."""
     if not handles:
         return []
-    target_size = min(6, len(handles))
+    target_size = min(8, len(handles))
     sample: list[str] = []
     # Fill up to half the sample with warm engagers that overlap our VIP list
     if warm_engagers:
@@ -1908,9 +1913,19 @@ async def gather_vip_candidates(
         for h in warm_overlap[: target_size // 2]:
             if h not in sample:
                 sample.append(h)
-    # Fill the rest randomly from VIPs
+    # Build remaining pool, preferring VIPs not yet at their daily cap
     remaining = [h for h in handles if h not in sample]
-    sample.extend(random.sample(remaining, min(target_size - len(sample), len(remaining))))
+    if state is not None:
+        uncapped = [h for h in remaining if _vip_action_count_today(state, h) < MAX_ACTIONS_PER_VIP_PER_DAY]
+        capped = [h for h in remaining if h not in uncapped]
+        random.shuffle(uncapped)
+        random.shuffle(capped)
+        # 90% uncapped, 10% capped (in case all uncapped time out)
+        remaining_ordered = uncapped + capped
+    else:
+        random.shuffle(remaining)
+        remaining_ordered = remaining
+    sample.extend(remaining_ordered[: target_size - len(sample)])
     pool: list[TweetCandidate] = []
     for h in sample:
         try:
@@ -2656,7 +2671,7 @@ async def run_cycle(state: dict[str, Any]) -> None:
             if MAX_REPLIES_PER_CYCLE > 0 and VIP_HANDLES and VIP_REPLY_RATIO > 0:
                 set_action(state, f"Scanning {min(6, len(VIP_HANDLES))} VIP timelines for fresh tweets")
                 warm = [w["handle"] for w in (state.get("warm_engagers") or [])]
-                vip_cands = await gather_vip_candidates(page, VIP_HANDLES, warm_engagers=warm)
+                vip_cands = await gather_vip_candidates(page, VIP_HANDLES, warm_engagers=warm, state=state)
                 vip_cands = [c for c in vip_cands if c.url not in state.get("replied_tweet_ids", [])]
                 # Pre-filter: drop VIPs already at their daily cap
                 vip_cands_filtered = []
@@ -2678,7 +2693,22 @@ async def run_cycle(state: dict[str, Any]) -> None:
                 await long_wait(10, 12, state, "Pre-reply pause")
 
                 # Strategy-driven query pool (LLM-curated), falls back to baseline
-                reply_pool = strategy.get("reply_queries") or REPLY_SEARCH_QUERIES
+                # Sanity-filter LLM-generated queries — strip anything that looks
+                # like a hallucinated product name (e.g. 'Spiderbrain V3', 'tartarusai cli').
+                # A query is suspect if it's CamelCase + a version number, or contains
+                # an obscure single-token name with no spaces/context.
+                raw_pool = strategy.get("reply_queries") or REPLY_SEARCH_QUERIES
+                def _query_looks_real(q: str) -> bool:
+                    if not q or len(q) < 3 or len(q) > 60:
+                        return False
+                    # Reject queries that look like hallucinated product/version names
+                    if re.search(r"\b[A-Z][a-z]+[A-Z]\w*\s*[Vv]\d", q):  # 'Spiderbrain V3'
+                        return False
+                    # Reject obscure single-token CamelCase names without context
+                    if re.fullmatch(r"[a-z]+[A-Z]\w+", q):  # 'tartarusAI'
+                        return False
+                    return True
+                reply_pool = [q for q in raw_pool if _query_looks_real(q)] or REPLY_SEARCH_QUERIES
                 used_queries: set[str] = set()
                 for r_idx in range(MAX_REPLIES_PER_CYCLE):
                     if not await respect_control(state):
@@ -2712,7 +2742,12 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         used_queries.add(query)
 
                         set_action(state, f"Reply {r_idx+1}/{MAX_REPLIES_PER_CYCLE}: searching '{query}'")
-                        cands = await discover_reply_candidates(page, query)
+                        try:
+                            cands = await discover_reply_candidates(page, query)
+                        except Exception as e:
+                            logger.warning(f"Reply search '{query}' failed (non-fatal): {e}")
+                            state["_cycle_error_count"] = int(state.get("_cycle_error_count", 0)) + 1
+                            cands = []
                         record_query_run(state, query, "reply", len(cands))
                         # Broad-search filter — loosened from "5-500 likes, 90 min" to
                         # "2-2000 likes, 180 min" so we don't starve when VIP pool is dry.

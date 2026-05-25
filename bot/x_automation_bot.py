@@ -2701,12 +2701,21 @@ async def run_cycle(state: dict[str, Any]) -> None:
                 def _query_looks_real(q: str) -> bool:
                     if not q or len(q) < 3 or len(q) > 60:
                         return False
-                    # Reject queries that look like hallucinated product/version names
-                    if re.search(r"\b[A-Z][a-z]+[A-Z]\w*\s*[Vv]\d", q):  # 'Spiderbrain V3'
+                    # Reject any query with a version-number suffix — almost always
+                    # a hallucinated product name (e.g. 'Spiderbrain V3', 'Foo v2').
+                    if re.search(r"\b[Vv]\d+\b", q):
                         return False
-                    # Reject obscure single-token CamelCase names without context
-                    if re.fullmatch(r"[a-z]+[A-Z]\w+", q):  # 'tartarusAI'
-                        return False
+                    # Reject lowercase compound 'xxxai' / 'xxxgpt' tokens — typical
+                    # LLM hallucination shape for fake AI tools.
+                    tokens = q.lower().split()
+                    for t in tokens:
+                        if len(t) >= 6 and (t.endswith("ai") or t.endswith("gpt") or t.endswith("llm")):
+                            # Real names like 'openai', 'anthropic' won't hit this since
+                            # 'openai' is in our trusted vocab — but we can't easily check.
+                            # Allow if the token is well-known.
+                            known = {"openai", "googleai", "metaai", "anthropic", "deepmind", "togetherai", "perplexityai", "mistralai"}
+                            if t not in known:
+                                return False
                     return True
                 reply_pool = [q for q in raw_pool if _query_looks_real(q)] or REPLY_SEARCH_QUERIES
                 used_queries: set[str] = set()

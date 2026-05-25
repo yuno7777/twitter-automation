@@ -402,10 +402,31 @@ def load_state() -> dict[str, Any]:
 
 
 def save_state(state: dict[str, Any]) -> None:
+    """Atomic state write with Windows-aware retry.
+    On Windows, os.replace() fails with WinError 5 if anything (OneDrive,
+    Defender, the API server) has a handle on the destination file at the
+    instant of the swap. We retry with exponential backoff — typically clears
+    on attempt 2. If all retries fail, log and continue rather than crash the
+    cycle; the next save attempt will recover."""
     tmp = STATE_PATH.with_suffix(".json.tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
-    tmp.replace(STATE_PATH)
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+    except PermissionError as e:
+        logger.warning(f"save_state: temp write failed (will skip this save): {e}")
+        return
+
+    last_err: Exception | None = None
+    for attempt in range(6):  # ~0 + 50 + 100 + 200 + 400 + 800 = ~1.5s total
+        try:
+            tmp.replace(STATE_PATH)
+            return
+        except PermissionError as e:
+            last_err = e
+            time.sleep(0.05 * (2 ** attempt))
+    # All retries exhausted — log loudly but don't crash the cycle.
+    # The next save_state call will retry; we don't lose state, just one update.
+    logger.error(f"save_state: gave up after 6 retries — {last_err}. State unchanged on disk.")
 
 
 def set_action(state: dict[str, Any], action: str) -> None:

@@ -30,6 +30,7 @@ dashboard/node_modules/
 dashboard/.next/
 dashboard/.env.local
 dashboard/out/
+dashboard/tsconfig.tsbuildinfo
 
 # Misc
 .DS_Store

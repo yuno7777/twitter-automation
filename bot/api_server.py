@@ -204,6 +204,36 @@ def history_reposts() -> list[dict[str, Any]]:
     return read_state().get("repost_history", [])
 
 
+@app.get("/api/own_velocity")
+def own_velocity() -> list[dict[str, Any]]:
+    """Feature 4: Early-curve performance of our own recent tweets."""
+    return read_state().get("own_tweet_performance", [])
+
+
+@app.get("/api/warm_engagers")
+def warm_engagers() -> list[dict[str, Any]]:
+    """Feature 6: Handles that recently engaged with us."""
+    return read_state().get("warm_engagers", [])
+
+
+@app.get("/api/daily_budget")
+def daily_budget() -> dict[str, Any]:
+    """Feature 9: Daily action ceiling status."""
+    import os as _os
+    s = read_state()
+    return {
+        "used": int(s.get("daily_action_count", 0) or 0),
+        "limit": int(_os.getenv("MAX_DAILY_ACTIONS", "200")),
+        "date": s.get("daily_action_date"),
+    }
+
+
+@app.get("/api/phrases_to_avoid")
+def phrases_to_avoid() -> list[str]:
+    """Feature 10: Learned phrases the critic has flagged."""
+    return read_state().get("phrases_to_avoid", [])
+
+
 @app.get("/api/critic_log")
 def critic_log() -> list[dict[str, Any]]:
     return read_state().get("critic_log", [])

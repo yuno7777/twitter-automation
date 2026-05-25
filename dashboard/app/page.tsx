@@ -73,8 +73,10 @@ export default function OverviewPage() {
   const { data: health } = useSWR<HealthResponse>("/api/health", fetcher, { refreshInterval: 30000 });
   const { data: cookie } = useSWR<CookieStatusResponse>("/api/cookie_status", fetcher, { refreshInterval: 60000 });
   const { data: llm } = useSWR<LLMHealthResponse>("/api/llm_health", fetcher, { refreshInterval: 15000 });
+  const { data: budget } = useSWR<{ used: number; limit: number; date: string | null }>("/api/daily_budget", fetcher, { refreshInterval: 15000 });
 
   const s = status?.status ?? "stopped";
+  const budgetPct = budget ? Math.min(100, Math.round((budget.used / Math.max(1, budget.limit)) * 100)) : 0;
 
   const activity = [
     ...(tweets || []).slice(0, 5).map((t) => ({
@@ -102,6 +104,32 @@ export default function OverviewPage() {
         <h1 className="text-3xl font-bold tracking-tight">Overview</h1>
         <p className="text-muted text-sm">Real-time view of your Twitter Growth System.</p>
       </header>
+
+      {/* Daily action budget — shows how much of MAX_DAILY_ACTIONS we've used */}
+      {budget && (
+        <div className="glass p-4 flex items-center gap-4">
+          <div className="flex-1">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted">Daily action budget</span>
+              <span className="mono">
+                {budget.used} / {budget.limit}
+                {budget.used >= budget.limit && (
+                  <span className="ml-2 text-rose-300">— ceiling hit, engagement paused</span>
+                )}
+              </span>
+            </div>
+            <div className="mt-2 h-1.5 rounded-full bg-white/5 overflow-hidden">
+              <div
+                className={cn(
+                  "h-full transition-all",
+                  budgetPct >= 90 ? "bg-rose-400" : budgetPct >= 70 ? "bg-amber-400" : "bg-lavender"
+                )}
+                style={{ width: `${budgetPct}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Health banner — critical if X is showing suspension warnings */}
       {health && health.status === "critical" && (

@@ -170,10 +170,17 @@ STYLE_MODES = [
      "Open with a pointed question that frames the rest. Not 'what do you think?' — a real curiosity."),
     ("tool_comparison",
      "Compare two specific tools/approaches. Name both. State which one you actually use and why."),
+    # Algorithm-targeted modes (added after analyzing xai-org/x-algorithm):
+    ("reply_bait",
+     "End with a question, contrarian claim, or 'fill-in-the-blank' that begs pushback. "
+     "X's algorithm weights P(reply) heavily — tweets that invite the audience to respond outperform conclusive statements."),
+    ("curiosity_gap",
+     "Hint at expertise without dumping it. 'Spent 3 weeks on this. Took 2 minutes to fix once I saw it. Lesson:' "
+     "Leaves the reader wanting more, drives P(profile_click) which is a major positive ranking signal."),
 ]
 
-# Weighted: hook 30 / personal 20 / contrarian 20 / listicle 10 / question 10 / comparison 10
-STYLE_WEIGHTS = [30, 20, 20, 10, 10, 10]
+# Weighted: hook 22 / personal 15 / contrarian 15 / listicle 8 / question 8 / comparison 7 / reply_bait 15 / curiosity_gap 10
+STYLE_WEIGHTS = [22, 15, 15, 8, 8, 7, 15, 10]
 
 
 def pick_style_mode() -> tuple[str, str]:

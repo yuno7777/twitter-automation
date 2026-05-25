@@ -678,6 +678,7 @@ async def critique_text(
     """Rate a draft 1-10 across multiple dimensions. Returns:
         {score: int, hook: int, voice_match: int, value: int, issues: [str], verdict: str}
     """
+    first_line = (text.split("\n", 1)[0] or "")[:80]
     prompt = f"""NICHE: {niche}
 
 VOICE THIS ACCOUNT SHOULD HAVE:
@@ -688,11 +689,24 @@ DRAFT {role.upper()}:
 {text}
 \"\"\"
 
+FIRST 80 CHARS (this is what determines whether someone scrolls past or stops):
+{first_line}
+
 Rate this draft on 1-10 scales:
-- hook: how strong is the opening?
+- hook: how strong is the opening as a whole?
+- first_line_hook: would the FIRST LINE alone stop a thumb mid-scroll? P(not_dwelled) is a heavy negative weight in X's algorithm — if line 1 doesn't grab, the tweet is invisible. (cap overall score at 6 if first_line_hook < 7)
 - voice_match: does this sound like the niche/voice above, or generic AI slop?
 - value: does it actually say something interesting?
 - grounding: is every claim supported, with concrete names / a source link? (cap overall score at 6 if grounding < 7)
+
+PREDICTED ENGAGEMENT — rate each on 1-10 how likely this tweet is to earn the signal
+(these are the actual weighted signals in X's Phoenix ranker):
+- p_favorite: how like-worthy?
+- p_reply: does it invite a response, contrarian pushback, or fill-in-the-blank?
+- p_quote: would someone quote-tweet this to add their own take?
+- p_share_dm: would a reader DM this to a specific friend? (highest-value signal — save-worthy content)
+- p_profile_click: does it make readers curious about who wrote it?
+- p_dwell: does it have enough substance to make someone stop and read?
 
 CRITICAL GROUNDING CHECKS — auto-flag and lower the score:
 - Mentions a product/model/repo without a URL or clear source -> flag "missing source link, ambiguous reference"
@@ -707,9 +721,16 @@ List specific issues (banned words, weak hook, generic phrasing, LinkedIn energy
 Return JSON only:
 {{
   "hook": <int 1-10>,
+  "first_line_hook": <int 1-10>,
   "voice_match": <int 1-10>,
   "value": <int 1-10>,
   "grounding": <int 1-10>,
+  "p_favorite": <int 1-10>,
+  "p_reply": <int 1-10>,
+  "p_quote": <int 1-10>,
+  "p_share_dm": <int 1-10>,
+  "p_profile_click": <int 1-10>,
+  "p_dwell": <int 1-10>,
   "score": <int 1-10>,
   "issues": ["specific problem 1", "specific problem 2"],
   "verdict": "post" or "regenerate"
@@ -725,8 +746,11 @@ Return JSON only:
     except Exception:
         score = 7
     grounding = int(parsed.get("grounding", 7) or 7)
-    # Hard cap: if grounding is weak, cap overall score so the draft regenerates
+    first_line_hook = int(parsed.get("first_line_hook", 7) or 7)
+    # Hard caps: if grounding OR first-line hook are weak, force regenerate
     if grounding < 7:
+        score = min(score, 6)
+    if first_line_hook < 7:
         score = min(score, 6)
 
     # Muted-keyword hard cap (X algorithm muted_keyword_filter)
@@ -736,12 +760,32 @@ Return JSON only:
         score = min(score, 5)  # forces regenerate
         issues.append(f"contains commonly-muted terms: {', '.join(muted_hits)}")
 
+    # Predicted-engagement composite — weighted sum approximating Phoenix scorer
+    # Weights derived from X's signal hierarchy (share_via_dm > quote > reply > etc.)
+    p_fav   = int(parsed.get("p_favorite", 6) or 6)
+    p_rep   = int(parsed.get("p_reply", 6) or 6)
+    p_quote = int(parsed.get("p_quote", 6) or 6)
+    p_dm    = int(parsed.get("p_share_dm", 6) or 6)
+    p_prof  = int(parsed.get("p_profile_click", 6) or 6)
+    p_dwell = int(parsed.get("p_dwell", 6) or 6)
+    # Weighted: DM-share (5) > quote (4) > reply (3) > profile-click (2) > favorite/dwell (1)
+    weighted = (p_dm * 5 + p_quote * 4 + p_rep * 3 + p_prof * 2 + p_fav * 1 + p_dwell * 1) / 16
+    predicted_engagement = round(weighted, 2)
+    # If predicted engagement is poor, cap score (forces regenerate)
+    if predicted_engagement < 6.0:
+        score = min(score, 6)
+        issues.append(f"low predicted engagement ({predicted_engagement}/10)")
+
     return {
         "score": max(1, min(10, score)),
         "hook": int(parsed.get("hook", 7) or 7),
+        "first_line_hook": max(1, min(10, first_line_hook)),
         "voice_match": int(parsed.get("voice_match", 7) or 7),
         "value": int(parsed.get("value", 7) or 7),
         "grounding": max(1, min(10, grounding)),
+        "p_favorite": p_fav, "p_reply": p_rep, "p_quote": p_quote,
+        "p_share_dm": p_dm, "p_profile_click": p_prof, "p_dwell": p_dwell,
+        "predicted_engagement": predicted_engagement,
         "muted_terms": muted_hits,
         "issues": issues,
         "verdict": parsed.get("verdict") or ("post" if score >= 7 else "regenerate"),

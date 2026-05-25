@@ -91,6 +91,17 @@ MAX_REPOSTS_PER_CYCLE = int(os.getenv("MAX_REPOSTS_PER_CYCLE", "4"))
 # = the 4th and 5th actions are near-zero leverage AND we look botty to the OP.
 MAX_ACTIONS_PER_VIP_PER_CYCLE = int(os.getenv("MAX_ACTIONS_PER_VIP_PER_CYCLE", "1"))
 MAX_ACTIONS_PER_VIP_PER_DAY = int(os.getenv("MAX_ACTIONS_PER_VIP_PER_DAY", "2"))
+
+# Global daily action ceiling. X soft-bans aged accounts past ~200-300 actions/day.
+# At 6+4+4+2+2+1+10 = 29 actions/cycle × 12 cycles = 348/day in the worst case.
+MAX_DAILY_ACTIONS = int(os.getenv("MAX_DAILY_ACTIONS", "200"))
+
+# Topic IDs — every tweet must fit cleanly into ONE of these for better routing.
+TOPIC_IDS = [
+    "AI agents", "LLMs", "MLOps", "AI tools", "developer productivity",
+    "indie SaaS", "vibe coding", "AI infrastructure", "AI research",
+    "automation", "shipping side-projects",
+]
 MAX_FOLLOW_UPS_PER_CYCLE = int(os.getenv("MAX_FOLLOW_UPS_PER_CYCLE", "2"))
 
 # Fraction of replies that should target the VIP list. Rest go to broad search.
@@ -169,6 +180,85 @@ def _vip_allowed(state: dict[str, Any], handle: str | None, this_cycle: set[str]
     if _vip_action_count_today(state, h) >= MAX_ACTIONS_PER_VIP_PER_DAY:
         return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Conversation-level dedup (Feature 3)
+# ---------------------------------------------------------------------------
+
+def _status_id_from_url(url: str) -> str | None:
+    """Extract the numeric status id from a tweet URL. We use it as a stand-in
+    for conversation_id — for our purposes the root tweet IS the conversation."""
+    try:
+        if "/status/" not in url:
+            return None
+        tail = url.split("/status/", 1)[1]
+        sid = tail.split("?", 1)[0].split("/", 1)[0]
+        return sid if sid.isdigit() else None
+    except Exception:
+        return None
+
+
+def _record_conversation(state: dict[str, Any], url: str) -> None:
+    sid = _status_id_from_url(url)
+    if not sid:
+        return
+    log = state.setdefault("replied_conversation_ids", [])
+    if sid not in log:
+        log.insert(0, sid)
+    state["replied_conversation_ids"] = log[:1000]
+
+
+def _conversation_already_engaged(state: dict[str, Any], url: str) -> bool:
+    sid = _status_id_from_url(url)
+    if not sid:
+        return False
+    return sid in (state.get("replied_conversation_ids") or [])
+
+
+# ---------------------------------------------------------------------------
+# Daily action ceiling (Feature 9)
+# ---------------------------------------------------------------------------
+
+def _maybe_rollover_daily_count(state: dict[str, Any]) -> None:
+    """Reset the daily counter at UTC midnight."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    if state.get("daily_action_date") != today:
+        state["daily_action_date"] = today
+        state["daily_action_count"] = 0
+
+
+def _bump_daily_count(state: dict[str, Any], n: int = 1) -> None:
+    _maybe_rollover_daily_count(state)
+    state["daily_action_count"] = int(state.get("daily_action_count", 0) or 0) + n
+
+
+def _daily_ceiling_hit(state: dict[str, Any]) -> bool:
+    _maybe_rollover_daily_count(state)
+    return int(state.get("daily_action_count", 0) or 0) >= MAX_DAILY_ACTIONS
+
+
+# ---------------------------------------------------------------------------
+# Phrases-to-avoid feedback loop (Feature 10)
+# ---------------------------------------------------------------------------
+
+def _record_avoided_phrase(state: dict[str, Any], phrase: str) -> None:
+    """When the muted-term filter trips, the offending phrase goes into a
+    learned-avoid list that gets injected into the next generation prompt."""
+    p = (phrase or "").strip().lower()
+    if not p:
+        return
+    avoid = state.setdefault("phrases_to_avoid", [])
+    if p not in avoid:
+        avoid.insert(0, p)
+    state["phrases_to_avoid"] = avoid[:50]
+
+
+def _format_avoid_phrases(state: dict[str, Any]) -> str:
+    avoid = state.get("phrases_to_avoid") or []
+    if not avoid:
+        return ""
+    return "PHRASES TO AVOID (learned from prior critic rejections):\n- " + "\n- ".join(avoid[:20])
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -258,6 +348,12 @@ DEFAULT_STATE: dict[str, Any] = {
     "bottom_tweets": [],         # worst-performing recent own tweets (negative reference)
     "responded_thread_ids": [],  # threads where we already did a follow-up
     "vip_action_log": {},        # {handle: [iso_ts, ...]} — per-VIP action history for daily cap
+    "replied_conversation_ids": [],  # status_ids treated as conversation roots — dedup whole threads
+    "own_tweet_performance": [], # [{url, text, posted_at, likes_30m, replies_30m, reposts_30m, checked_at}]
+    "warm_engagers": [],         # [{handle, last_interaction_ts}] — users who recently engaged with us
+    "daily_action_count": 0,     # actions taken today (reset at UTC midnight)
+    "daily_action_date": None,   # ISO date string used to detect midnight rollover
+    "phrases_to_avoid": [],      # learned banned phrases from muted-term feedback loop
     "draft_queue": [],           # off-hours drafts pending your approval
     "critic_log": [],            # last 50 critic decisions for the dashboard
     # Trend-discovery memory — grows over time, drives smarter searches
@@ -963,9 +1059,18 @@ async def _gate_with_critic(
         )
         score = verdict["score"]
         issues = verdict.get("issues", [])
+        # Feature 10: feedback loop — every muted term that tripped becomes a
+        # learned "phrase to avoid" injected into the next generation prompt.
+        for term in verdict.get("muted_terms", []) or []:
+            _record_avoided_phrase(state, term)
         accepted = score >= CRITIC_THRESHOLD
         log_critic(state, role, score, issues, attempt, accepted)
-        logger.info(f"Critic[{role} attempt {attempt}]: score={score} issues={issues[:3]}")
+        pe = verdict.get("predicted_engagement")
+        flh = verdict.get("first_line_hook")
+        logger.info(
+            f"Critic[{role} attempt {attempt}]: score={score} "
+            f"first_line={flh} predicted_engagement={pe} issues={issues[:3]}"
+        )
         save_state(state)
         if accepted:
             return candidate
@@ -978,10 +1083,24 @@ async def _gate_with_critic(
     return best
 
 
+def _gen_prompt_addons(state: dict[str, Any]) -> tuple[str, str]:
+    """Returns (topic_block, avoid_block) — shared injection for all tweet generators.
+    Feature 7: pick one explicit topic ID for sharper algorithmic routing.
+    Feature 10: include learned avoid-list from past critic rejections."""
+    topic = random.choice(TOPIC_IDS)
+    topic_block = (
+        f"TOPIC TAG (pick ONE — every tweet must fit cleanly into one topic for X's "
+        f"topic_ids_filter to route it correctly): {topic}"
+    )
+    avoid = _format_avoid_phrases(state)
+    return topic_block, (avoid or "")
+
+
 async def generate_thread(item: NewsItem, state: dict[str, Any]) -> list[str]:
     """Returns 1-3 tweets as a list. Empty list on failure."""
     template = load_prompt("tweet_prompt")
     mode_name, mode_instructions = creator_intel.pick_style_mode()
+    topic_block, avoid_block = _gen_prompt_addons(state)
     user_prompt = template.format(
         niche=NICHE,
         style_notes=load_style_notes(),
@@ -994,6 +1113,7 @@ async def generate_thread(item: NewsItem, state: dict[str, Any]) -> list[str]:
         source=item.source,
         link=item.link,
     )
+    user_prompt = f"{topic_block}\n\n{avoid_block}\n\n{user_prompt}".strip()
     text = await call_llm(user_prompt, "You write sharp, opinionated X posts that grow accounts.", state)
     if not text:
         return []
@@ -1004,6 +1124,7 @@ async def generate_trend_thread(topic: dict[str, Any], state: dict[str, Any]) ->
     """Turn a strategy tweet_topic (from real GitHub/HN signal) into a 1-3 tweet thread."""
     template = load_prompt("trend_tweet_prompt")
     mode_name, mode_instructions = creator_intel.pick_style_mode()
+    topic_block, avoid_block = _gen_prompt_addons(state)
     user_prompt = template.format(
         niche=NICHE,
         style_notes=load_style_notes(),
@@ -1015,6 +1136,7 @@ async def generate_trend_thread(topic: dict[str, Any], state: dict[str, Any]) ->
         context=topic.get("context", ""),
         source_url=topic.get("source_url", ""),
     )
+    user_prompt = f"{topic_block}\n\n{avoid_block}\n\n{user_prompt}".strip()
     text = await call_llm(user_prompt, "You write sharp builder-focused X posts.", state)
     if not text:
         return []
@@ -1752,12 +1874,31 @@ async def discover_vip_recent_tweets(page: Page, handle: str, max_age_min: int =
     return out
 
 
-async def gather_vip_candidates(page: Page, handles: list[str], cap_per_handle: int = 3) -> list[TweetCandidate]:
+async def gather_vip_candidates(
+    page: Page,
+    handles: list[str],
+    cap_per_handle: int = 3,
+    warm_engagers: list[str] | None = None,
+) -> list[TweetCandidate]:
     """Walk a sample of VIP handles and pool their fresh tweets.
+    Feature 6: warm engagers (recent likers/repliers to OUR tweets) get priority slots
+    in the sample — replies to warm targets convert ~3-5x better than cold VIPs.
     We sample ~6 per cycle (not all 50+) to keep cycle time reasonable."""
     if not handles:
         return []
-    sample = random.sample(handles, min(6, len(handles)))
+    target_size = min(6, len(handles))
+    sample: list[str] = []
+    # Fill up to half the sample with warm engagers that overlap our VIP list
+    if warm_engagers:
+        handles_lower = {h.lower() for h in handles}
+        warm_overlap = [h for h in warm_engagers if h.lower() in handles_lower]
+        random.shuffle(warm_overlap)
+        for h in warm_overlap[: target_size // 2]:
+            if h not in sample:
+                sample.append(h)
+    # Fill the rest randomly from VIPs
+    remaining = [h for h in handles if h not in sample]
+    sample.extend(random.sample(remaining, min(target_size - len(sample), len(remaining))))
     pool: list[TweetCandidate] = []
     for h in sample:
         try:
@@ -1852,6 +1993,137 @@ async def post_repost(page: Page, candidate: TweetCandidate) -> bool:
 # ---------------------------------------------------------------------------
 # Conversation continuation
 # ---------------------------------------------------------------------------
+
+async def measure_own_tweet_velocity(page: Page, state: dict[str, Any]) -> None:
+    """Feature 4: Early-curve velocity tracker.
+    For each of our recent tweets (last 24h) that hasn't been measured yet,
+    fetch live like/reply/repost counts. Stash in own_tweet_performance for the
+    dashboard AND as few-shot examples for the next tweet generation cycle."""
+    if not X_HANDLE:
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    candidates = []
+    for entry in state.get("tweet_history", [])[:30]:
+        try:
+            posted = datetime.fromisoformat(entry.get("posted_at", ""))
+        except Exception:
+            continue
+        if posted < cutoff:
+            continue
+        # Only measure tweets that have at least 25 min of in-flight time but haven't been logged yet
+        age_min = (datetime.now(timezone.utc) - posted).total_seconds() / 60
+        if age_min < 25:
+            continue
+        text_key = (entry.get("text") or "")[:80]
+        already_measured = any(
+            p.get("text_key") == text_key
+            for p in state.get("own_tweet_performance", [])
+        )
+        if already_measured:
+            continue
+        candidates.append((entry, text_key, age_min))
+
+    if not candidates:
+        return
+
+    # Cap to 5 measurements per cycle to keep things snappy
+    try:
+        await page.goto(f"https://x.com/{X_HANDLE}", wait_until="domcontentloaded", timeout=30000)
+        await jitter(2, 4)
+        await page.wait_for_selector(SELECTORS["tweet_card"], timeout=10000)
+    except Exception:
+        return
+
+    cards = await page.query_selector_all(SELECTORS["tweet_card"])
+    measured = 0
+    for card in cards[:20]:
+        if measured >= 5:
+            break
+        try:
+            text_el = await card.query_selector(SELECTORS["tweet_text"])
+            text = (await text_el.inner_text()) if text_el else ""
+            if not text:
+                continue
+            text_key = text[:80]
+            entry_match = next((c for c in candidates if c[1] == text_key), None)
+            if not entry_match:
+                continue
+
+            link_el = await card.query_selector('a[href*="/status/"]')
+            href = await link_el.get_attribute("href") if link_el else None
+            url = ("https://x.com" + href) if href and href.startswith("/") else (href or "")
+
+            like_el = await card.query_selector(f'{SELECTORS["like_btn"]} span')
+            replies_el = await card.query_selector(f'{SELECTORS["reply_btn"]} span')
+            rt_el = await card.query_selector(f'{SELECTORS["retweet_btn"]} span')
+
+            def _p(s): return _parse_count(s.strip() if s else "0")
+            likes_n   = _p((await like_el.inner_text()) if like_el else "0")
+            replies_n = _p((await replies_el.inner_text()) if replies_el else "0")
+            reposts_n = _p((await rt_el.inner_text()) if rt_el else "0")
+
+            state.setdefault("own_tweet_performance", []).insert(0, {
+                "url": url,
+                "text": text[:280],
+                "text_key": text_key,
+                "posted_at": entry_match[0].get("posted_at"),
+                "age_minutes_at_check": int(entry_match[2]),
+                "likes": likes_n,
+                "replies": replies_n,
+                "reposts": reposts_n,
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+            })
+            state["own_tweet_performance"] = state["own_tweet_performance"][:100]
+            measured += 1
+            logger.info(f"Velocity: {text[:50]!r} @{int(entry_match[2])}min — {likes_n}L / {replies_n}R / {reposts_n}RT")
+        except Exception as e:
+            logger.debug(f"Velocity card skip: {e}")
+    if measured:
+        save_state(state)
+
+
+async def scrape_warm_engagers(page: Page, state: dict[str, Any]) -> None:
+    """Feature 6: Reciprocal engagement loop.
+    Visit /notifications, pull handles that liked/replied to our recent tweets.
+    These become a 'warm targets' pool — much higher reply-conversion than cold VIPs."""
+    try:
+        await page.goto("https://x.com/notifications", wait_until="domcontentloaded", timeout=30000)
+        await jitter(3, 6)
+    except Exception as e:
+        logger.warning(f"Notifications page didn't load: {e}")
+        return
+
+    # Notification cells use [data-testid="cellInnerDiv"] with @handle links inside
+    handles_found: list[str] = []
+    try:
+        cells = await page.query_selector_all('[data-testid="cellInnerDiv"]')
+        for cell in cells[:30]:
+            try:
+                txt = (await cell.inner_text())[:300]
+                # Find @-mentions in the notification text
+                for match in re.findall(r"@([A-Za-z0-9_]{2,15})", txt):
+                    h = match.lower()
+                    if h != X_HANDLE.lower() and h not in handles_found:
+                        handles_found.append(h)
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug(f"Notifications scrape failed: {e}")
+
+    if not handles_found:
+        return
+    now_iso = datetime.now(timezone.utc).isoformat()
+    warm = state.setdefault("warm_engagers", [])
+    existing = {w["handle"]: w for w in warm}
+    for h in handles_found[:20]:
+        if h in existing:
+            existing[h]["last_interaction_ts"] = now_iso
+        else:
+            warm.insert(0, {"handle": h, "last_interaction_ts": now_iso})
+    state["warm_engagers"] = warm[:100]
+    logger.info(f"Warm engagers found: {len(handles_found)} (pool size: {len(state['warm_engagers'])})")
+    save_state(state)
+
 
 async def scrape_own_recent_tweets_with_replies(page: Page, state: dict[str, Any]) -> list[dict[str, Any]]:
     """Scrape your own recent tweets (24h-7d old) and any replies they got."""
@@ -2100,8 +2372,20 @@ async def run_cycle(state: dict[str, Any]) -> None:
     likes_made = 0
     quotes_made = 0
     follow_ups_made = 0
+    reposts_made = 0
     # Errors observed THIS cycle. Bumped when search throttle / empty / X error pages occur.
     state["_cycle_error_count"] = 0
+
+    # Feature 9: rollover daily counter at UTC midnight
+    _maybe_rollover_daily_count(state)
+    if _daily_ceiling_hit(state):
+        logger.warning(
+            f"Daily action ceiling hit ({state['daily_action_count']}/{MAX_DAILY_ACTIONS}) — "
+            f"skipping engagement this cycle. Resets at UTC midnight."
+        )
+        set_action(state, f"Daily ceiling hit ({MAX_DAILY_ACTIONS} actions) — cooling down")
+        save_state(state)
+        return
 
     is_peak = in_peak_hour()
     if not is_peak:
@@ -2135,6 +2419,22 @@ async def run_cycle(state: dict[str, Any]) -> None:
             set_action(state, "Scraping own engagement")
             await scrape_own_top_tweets(page, state)
             await jitter(2, 5)
+
+            # Feature 4: Early-curve velocity tracker — measure recent tweets at ~30 min
+            set_action(state, "Measuring own-tweet velocity")
+            try:
+                await measure_own_tweet_velocity(page, state)
+            except Exception as e:
+                logger.warning(f"Velocity measurement failed (non-fatal): {e}")
+            await jitter(1, 3)
+
+            # Feature 6: Reciprocal engagement loop — pull recent engagers from notifications
+            set_action(state, "Scanning notifications for warm engagers")
+            try:
+                await scrape_warm_engagers(page, state)
+            except Exception as e:
+                logger.warning(f"Warm-engager scrape failed (non-fatal): {e}")
+            await jitter(2, 4)
 
             # Creator intel — port from x-ai. Scrapes tracked creators' top tweets
             # so the LLM has real "what's working in this niche right now" examples.
@@ -2343,7 +2643,8 @@ async def run_cycle(state: dict[str, Any]) -> None:
             vip_actions_this_cycle: set[str] = set()  # handles we've acted on this cycle
             if MAX_REPLIES_PER_CYCLE > 0 and VIP_HANDLES and VIP_REPLY_RATIO > 0:
                 set_action(state, f"Scanning {min(6, len(VIP_HANDLES))} VIP timelines for fresh tweets")
-                vip_cands = await gather_vip_candidates(page, VIP_HANDLES)
+                warm = [w["handle"] for w in (state.get("warm_engagers") or [])]
+                vip_cands = await gather_vip_candidates(page, VIP_HANDLES, warm_engagers=warm)
                 vip_cands = [c for c in vip_cands if c.url not in state.get("replied_tweet_ids", [])]
                 # Pre-filter: drop VIPs already at their daily cap
                 vip_cands_filtered = []
@@ -2465,12 +2766,23 @@ async def run_cycle(state: dict[str, Any]) -> None:
                     if not reply:
                         continue
 
+                    # Feature 9: stop if daily ceiling reached
+                    if _daily_ceiling_hit(state):
+                        logger.warning("Daily ceiling hit mid-cycle — stopping replies.")
+                        break
+                    # Feature 3: skip if we've already engaged this conversation
+                    if _conversation_already_engaged(state, best.url):
+                        logger.info(f"Skipping — already engaged this conversation: {best.url}")
+                        continue
+
                     set_action(state, f"Posting reply {r_idx+1}")
                     if await post_reply(page, best, reply):
                         replies_made += 1
                         state["stats"]["total_replies"] += 1
                         state["replied_tweet_ids"].append(best.url)
                         state["replied_tweet_ids"] = state["replied_tweet_ids"][-500:]
+                        _record_conversation(state, best.url)  # Feature 3
+                        _bump_daily_count(state)                # Feature 9
                         # Per-VIP cap bookkeeping
                         h = _handle_from_tweet_url(best.url)
                         if h:
@@ -2552,6 +2864,8 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         })
                         state["quote_history"] = state["quote_history"][:200]
                         state["replied_tweet_ids"].append(target.url)
+                        _record_conversation(state, target.url)  # Feature 3
+                        _bump_daily_count(state)                  # Feature 9
                         h = _handle_from_tweet_url(target.url)
                         if h:
                             vip_actions_this_cycle.add(h)
@@ -2612,6 +2926,7 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         state["stats"]["total_reposts"] = state["stats"].get("total_reposts", 0) + 1
                         state.setdefault("reposted_tweet_ids", []).append(target.url)
                         state["reposted_tweet_ids"] = state["reposted_tweet_ids"][-500:]
+                        _bump_daily_count(state)  # Feature 9
                         h = _handle_from_tweet_url(target.url)
                         if h:
                             vip_actions_this_cycle.add(h)

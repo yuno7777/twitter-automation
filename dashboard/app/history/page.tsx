@@ -8,12 +8,13 @@ import {
   FollowUpHistoryItem,
   QuoteHistoryItem,
   ReplyHistoryItem,
+  RepostHistoryItem,
   TweetHistoryItem,
 } from "@/lib/api";
 import { cn, formatLocalTime } from "@/lib/utils";
 import { ExternalLink } from "lucide-react";
 
-const TABS = ["tweets", "replies", "quotes", "follow_ups", "follows"] as const;
+const TABS = ["tweets", "replies", "quotes", "reposts", "follow_ups", "follows"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function HistoryPage() {
@@ -21,6 +22,7 @@ export default function HistoryPage() {
   const { data: tweets } = useSWR<TweetHistoryItem[]>("/api/history/tweets", fetcher, { refreshInterval: 10000 });
   const { data: replies } = useSWR<ReplyHistoryItem[]>("/api/history/replies", fetcher, { refreshInterval: 10000 });
   const { data: quotes } = useSWR<QuoteHistoryItem[]>("/api/history/quotes", fetcher, { refreshInterval: 10000 });
+  const { data: reposts } = useSWR<RepostHistoryItem[]>("/api/history/reposts", fetcher, { refreshInterval: 10000 });
   const { data: followUps } = useSWR<FollowUpHistoryItem[]>("/api/history/follow_ups", fetcher, { refreshInterval: 10000 });
   const { data: follows } = useSWR<FollowHistoryItem[]>("/api/history/follows", fetcher, { refreshInterval: 10000 });
 
@@ -51,6 +53,7 @@ export default function HistoryPage() {
       {tab === "tweets" && <TweetsTable rows={tweets || []} />}
       {tab === "replies" && <RepliesTable rows={replies || []} />}
       {tab === "quotes" && <QuotesTable rows={quotes || []} />}
+      {tab === "reposts" && <RepostsTable rows={reposts || []} />}
       {tab === "follow_ups" && <FollowUpsTable rows={followUps || []} />}
       {tab === "follows" && <FollowsTable rows={follows || []} />}
     </div>
@@ -82,6 +85,37 @@ function QuotesTable({ rows }: { rows: QuoteHistoryItem[] }) {
               <ExternalLink size={12} /> original
             </a>
             <span className="mono">{formatLocalTime(q.posted_at)}</span>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function RepostsTable({ rows }: { rows: RepostHistoryItem[] }) {
+  if (rows.length === 0) return <Empty label="No reposts yet." />;
+  return (
+    <ul className="space-y-2">
+      {rows.map((r, i) => (
+        <li key={i} className="glass p-4">
+          {r.original_tweet_text && (
+            <p className="text-sm italic">↻ {r.original_tweet_text}</p>
+          )}
+          <div className="flex items-center justify-between mt-2 text-xs text-muted">
+            <a
+              href={r.original_tweet_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-lavender hover:underline"
+            >
+              <ExternalLink size={12} /> original
+            </a>
+            <div className="flex items-center gap-3">
+              {r.original_likes !== undefined && (
+                <span className="text-lavender mono">{r.original_likes} likes</span>
+              )}
+              <span className="mono">{formatLocalTime(r.reposted_at)}</span>
+            </div>
           </div>
         </li>
       ))}

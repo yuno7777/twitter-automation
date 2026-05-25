@@ -279,6 +279,41 @@ export function getRepostHistory() {
   return json<RepostHistoryItem[]>("/api/history/reposts");
 }
 
+export interface OwnVelocityItem {
+  url: string;
+  text: string;
+  posted_at: string;
+  age_minutes_at_check: number;
+  likes: number;
+  replies: number;
+  reposts: number;
+  checked_at: string;
+}
+export function getOwnVelocity() {
+  return json<OwnVelocityItem[]>("/api/own_velocity");
+}
+
+export interface WarmEngager {
+  handle: string;
+  last_interaction_ts: string;
+}
+export function getWarmEngagers() {
+  return json<WarmEngager[]>("/api/warm_engagers");
+}
+
+export interface DailyBudget {
+  used: number;
+  limit: number;
+  date: string | null;
+}
+export function getDailyBudget() {
+  return json<DailyBudget>("/api/daily_budget");
+}
+
+export function getPhrasesToAvoid() {
+  return json<string[]>("/api/phrases_to_avoid");
+}
+
 export function getSettings() {
   return json<BotSettings>("/api/settings");
 }

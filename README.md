@@ -280,6 +280,29 @@ Double-click a `.vbs` on your Desktop → 3 hidden background processes start �
 
 </td>
 </tr>
+<tr>
+<td valign="top">
+
+#### ◆ algorithm-aware engagement
+
+Reverse-engineered [xai-org/x-algorithm](https://github.com/xai-org/x-algorithm). VIP list of 50 top AI/tech accounts drives 70% of replies. Per-VIP cap counters X's exponential diversity penalty. Repost window tightened to 30min — past that, `retweet_deduplication_filter` makes it useless.
+
+</td>
+<td valign="top">
+
+#### ◆ predicted-engagement scorer
+
+Pre-flight critic rates every draft on 7 signal axes (`favorite · reply · quote · share_via_dm · profile_click · dwell · first_line_hook`). Weighted sum approximates X's Phoenix ranker locally. Tweets that won't score get regenerated before X ever sees them.
+
+</td>
+<td valign="top">
+
+#### ◆ feedback-driven generation
+
+Muted-term filter trips → offending phrase logged to learned avoid-list, injected into next generation prompt. Own tweets measured at ~30min for early-curve velocity. Notification scrape pulls warm engagers — replies to them convert ~3-5x better than cold VIPs.
+
+</td>
+</tr>
 </table>
 
 <br />
@@ -593,12 +616,12 @@ twit-auto/
 │   └── requirements.txt
 ├── dashboard/
 │   ├── app/
-│   │   ├── page.tsx            ◀ /            overview + banners
+│   │   ├── page.tsx            ◀ /            overview + banners + daily budget
 │   │   ├── memory/page.tsx     ◀ /memory      bot brain + critic log
 │   │   ├── queue/page.tsx      ◀ /queue       off-hours draft approval
 │   │   ├── analytics/page.tsx  ◀ /analytics   charts + optimal hours
 │   │   ├── logs/page.tsx       ◀ /logs        live SSE
-│   │   ├── history/page.tsx    ◀ /history     5 tabs
+│   │   ├── history/page.tsx    ◀ /history     6 tabs (tweets/replies/quotes/reposts/follow_ups/follows)
 │   │   └── settings/page.tsx   ◀ /settings    LLM cascade picker
 │   ├── components/sidebar.tsx
 │   ├── lib/api.ts
@@ -622,15 +645,22 @@ twit-auto/
 | variable | default | purpose |
 |---|---|---|
 | `MAX_POSTS_PER_CYCLE`      | `1` | tweets / threads per cycle |
-| `MAX_REPLIES_PER_CYCLE`    | `5` | replies — highest growth lever |
-| `MAX_QUOTES_PER_CYCLE`     | `1` | quote-tweets per cycle |
+| `MAX_REPLIES_PER_CYCLE`    | `6` | replies (flipped down from 8 — quotes outperform algorithmically) |
+| `MAX_QUOTES_PER_CYCLE`     | `4` | quote-tweets (flipped up from 1) |
+| `MAX_REPOSTS_PER_CYCLE`    | `4` | plain reposts of VIPs — 30min freshness window |
 | `MAX_FOLLOW_UPS_PER_CYCLE` | `2` | conversation continuations |
 | `MAX_LIKES_PER_CYCLE`      | `10` | likes — lowest-risk action |
 | `MAX_FOLLOWS_PER_CYCLE`    | `2` | follows — keep low to avoid flag |
+| `MAX_ACTIONS_PER_VIP_PER_CYCLE` | `1` | counter X's diversity_multiplier penalty |
+| `MAX_ACTIONS_PER_VIP_PER_DAY` | `2` | rolling 24h cap per VIP |
+| `MAX_DAILY_ACTIONS`     | `200` | UTC-midnight reset, dashboard shows progress |
+| `VIP_REPLY_RATIO`       | `0.7` | fraction of replies that target VIP timelines |
+| `VIP_MAX_AGE_MIN`       | `60`  | only consider VIP tweets younger than this |
 | `PEAK_HOURS`            | `9,10,13,14,19,20,21` | when posting is allowed |
 | `NICHE`                 | *required* | drives every LLM prompt |
 | `X_HANDLE`              | *required* | for self-engagement feedback + health checks |
 | `CREATORS_TO_STUDY`     | *empty* | comma-separated X handles (no @) — bot scrapes their tweets each cycle |
+| `vip_handles.txt`       | *file* | newline-separated VIP list (50 AI/tech accounts pre-loaded) |
 | `GROQ_PRIMARY_MODEL`    | `openai/gpt-oss-120b` | tier 1 of the LLM cascade |
 | `GROQ_FALLBACK_MODEL`   | `llama-3.3-70b-versatile` | tier 2 — used when tier 1 rate-limits |
 | `GEMINI_MODEL`          | `gemini-2.5-flash` | tier 3 — last resort |
@@ -733,6 +763,19 @@ X blocks Playwright's bundled Chromium. The code uses `channel="chrome"` which l
    [x]   cookie refresh detection (30-day banner)
    [x]   best-time-to-post auto-detect (from your own engagement data)
    [x]   eval harness with adversarial scenarios
+   [x]   VIP-first targeting (replies, quotes, reposts on top 50 AI/tech accounts)
+   [x]   per-VIP action cap (1/cycle, 2/day — counters X's diversity penalty)
+   [x]   plain reposts (30-min freshness window — algorithm-tuned)
+   [x]   muted-keyword critic guard (30+ commonly-muted terms hard-cap)
+   [x]   predicted-engagement scorer (7-axis LLM micro-rank approximates Phoenix)
+   [x]   first-line hook critic axis (P(not_dwelled) defense)
+   [x]   reply-bait + curiosity-gap style modes (P(reply) + P(profile_click))
+   [x]   conversation-level dedup (skips whole threads, not just tweets)
+   [x]   early-curve velocity tracker (own tweets measured at ~30 min)
+   [x]   reciprocal engagement loop (warm engagers from notifications get priority)
+   [x]   topic-ID tagging at generation (one explicit topic per tweet for routing)
+   [x]   daily action ceiling (UTC-midnight reset, dashboard progress bar)
+   [x]   muted-term feedback loop (learned avoid-list injected into next prompt)
    [ ]   real-time engagement tracking per tweet (impressions over time)
    [ ]   multi-account orchestration
    [ ]   DSPy-compiled critic/analyzer prompts

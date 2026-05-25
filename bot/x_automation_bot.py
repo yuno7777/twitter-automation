@@ -90,7 +90,10 @@ MAX_REPOSTS_PER_CYCLE = int(os.getenv("MAX_REPOSTS_PER_CYCLE", "4"))
 # same author appears repeatedly in any viewer's feed. Hitting one VIP 5x in a cycle
 # = the 4th and 5th actions are near-zero leverage AND we look botty to the OP.
 MAX_ACTIONS_PER_VIP_PER_CYCLE = int(os.getenv("MAX_ACTIONS_PER_VIP_PER_CYCLE", "1"))
-MAX_ACTIONS_PER_VIP_PER_DAY = int(os.getenv("MAX_ACTIONS_PER_VIP_PER_DAY", "2"))
+# Was 2/day, bumped to 3 — at our scale (~50 replies/day) the old cap exhausted the
+# VIP pool by mid-afternoon and forced empty cycles. The diversity penalty still
+# applies after 3 same-author actions, but cap was the bottleneck not the algorithm.
+MAX_ACTIONS_PER_VIP_PER_DAY = int(os.getenv("MAX_ACTIONS_PER_VIP_PER_DAY", "3"))
 
 # Global daily action ceiling. X soft-bans aged accounts past ~200-300 actions/day.
 # At 6+4+4+2+2+1+10 = 29 actions/cycle × 12 cycles = 348/day in the worst case.
@@ -107,7 +110,7 @@ MAX_FOLLOW_UPS_PER_CYCLE = int(os.getenv("MAX_FOLLOW_UPS_PER_CYCLE", "2"))
 # Fraction of replies that should target the VIP list. Rest go to broad search.
 VIP_REPLY_RATIO = float(os.getenv("VIP_REPLY_RATIO", "0.7"))
 # Max tweet age (minutes) when scanning VIP timelines for fresh hot tweets.
-VIP_MAX_AGE_MIN = int(os.getenv("VIP_MAX_AGE_MIN", "60"))
+VIP_MAX_AGE_MIN = int(os.getenv("VIP_MAX_AGE_MIN", "120"))
 
 NICHE = os.getenv("NICHE", "AI, automation, and tech").strip()
 X_HANDLE = os.getenv("X_HANDLE", "").strip().lstrip("@")
@@ -1035,6 +1038,14 @@ def strip_markdown(text: str) -> str:
 
 CRITIC_THRESHOLD = 7
 CRITIC_MAX_ATTEMPTS = 3
+# Per-role thresholds — replies/follow-ups are short conversational text and shouldn't
+# be held to the same bar as long-form tweets (which need source URLs + strong hooks).
+CRITIC_THRESHOLDS = {
+    "tweet": 7,
+    "quote": 6,
+    "reply": 5,
+    "follow_up": 5,
+}
 
 
 async def _gate_with_critic(
@@ -1063,7 +1074,8 @@ async def _gate_with_critic(
         # learned "phrase to avoid" injected into the next generation prompt.
         for term in verdict.get("muted_terms", []) or []:
             _record_avoided_phrase(state, term)
-        accepted = score >= CRITIC_THRESHOLD
+        threshold = CRITIC_THRESHOLDS.get(role, CRITIC_THRESHOLD)
+        accepted = score >= threshold
         log_critic(state, role, score, issues, attempt, accepted)
         pe = verdict.get("predicted_engagement")
         flh = verdict.get("first_line_hook")
@@ -2702,20 +2714,22 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         set_action(state, f"Reply {r_idx+1}/{MAX_REPLIES_PER_CYCLE}: searching '{query}'")
                         cands = await discover_reply_candidates(page, query)
                         record_query_run(state, query, "reply", len(cands))
-                        # Broad-search filter unchanged: fresh (under 90 min), rising (5-500 likes)
+                        # Broad-search filter — loosened from "5-500 likes, 90 min" to
+                        # "2-2000 likes, 180 min" so we don't starve when VIP pool is dry.
                         cands = [
                             c for c in cands
-                            if 5 <= c.likes <= 500
-                            and c.age_minutes <= 90
+                            if 2 <= c.likes <= 2000
+                            and c.age_minutes <= 180
                             and c.url not in state["replied_tweet_ids"]
                         ]
                         cands_scored = [(c, False) for c in cands]
 
                     if not cands_scored:
-                        logger.info(f"No fresh reply candidates this slot (use_vip={use_vip}).")
-                        # If we wanted VIP and got nothing, the user asked for skip-and-broaden:
-                        # try once more from broad-search on next loop iteration (no special handling needed —
-                        # use_vip will re-roll false next time since vip_pool is empty).
+                        logger.info(
+                            f"REPLY SLOT {r_idx+1} EMPTY: use_vip={use_vip} "
+                            f"vip_pool_size={len(vip_pool)} "
+                            f"vip_actions_today={sum(1 for h in state.get('vip_action_log', {}) if _vip_action_count_today(state, h) > 0)}"
+                        )
                         continue
 
                     # Score everything and pick top 5 for the analyzer

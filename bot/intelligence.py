@@ -747,13 +747,17 @@ Return JSON only:
         score = 7
     grounding = int(parsed.get("grounding", 7) or 7)
     first_line_hook = int(parsed.get("first_line_hook", 7) or 7)
-    # Hard caps: if grounding OR first-line hook are weak, force regenerate
-    if grounding < 7:
-        score = min(score, 6)
-    if first_line_hook < 7:
-        score = min(score, 6)
+    # Only enforce grounding/hook caps on tweet-class content. Replies and follow-ups
+    # are conversational short-form and shouldn't be held to source-URL standards.
+    is_tweet_class = role in ("tweet", "quote")
+    if is_tweet_class:
+        if grounding < 7:
+            score = min(score, 6)
+        if first_line_hook < 7:
+            score = min(score, 6)
 
-    # Muted-keyword hard cap (X algorithm muted_keyword_filter)
+    # Muted-keyword hard cap (X algorithm muted_keyword_filter) — applies universally,
+    # we never want our content invisible to anyone who's muted these terms.
     muted_hits = find_muted_terms(text)
     issues = list(parsed.get("issues") or [])
     if muted_hits:
@@ -761,18 +765,17 @@ Return JSON only:
         issues.append(f"contains commonly-muted terms: {', '.join(muted_hits)}")
 
     # Predicted-engagement composite — weighted sum approximating Phoenix scorer
-    # Weights derived from X's signal hierarchy (share_via_dm > quote > reply > etc.)
     p_fav   = int(parsed.get("p_favorite", 6) or 6)
     p_rep   = int(parsed.get("p_reply", 6) or 6)
     p_quote = int(parsed.get("p_quote", 6) or 6)
     p_dm    = int(parsed.get("p_share_dm", 6) or 6)
     p_prof  = int(parsed.get("p_profile_click", 6) or 6)
     p_dwell = int(parsed.get("p_dwell", 6) or 6)
-    # Weighted: DM-share (5) > quote (4) > reply (3) > profile-click (2) > favorite/dwell (1)
     weighted = (p_dm * 5 + p_quote * 4 + p_rep * 3 + p_prof * 2 + p_fav * 1 + p_dwell * 1) / 16
     predicted_engagement = round(weighted, 2)
-    # If predicted engagement is poor, cap score (forces regenerate)
-    if predicted_engagement < 6.0:
+    # Only gate on predicted engagement for tweet-class. Replies don't need to be
+    # save-worthy or DM-shareable — they need to be context-appropriate.
+    if is_tweet_class and predicted_engagement < 6.0:
         score = min(score, 6)
         issues.append(f"low predicted engagement ({predicted_engagement}/10)")
 

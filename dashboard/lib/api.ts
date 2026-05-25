@@ -268,6 +268,17 @@ export function getFollowUpHistory() {
   return json<FollowUpHistoryItem[]>("/api/history/follow_ups");
 }
 
+export interface RepostHistoryItem {
+  original_tweet_url: string;
+  original_tweet_text?: string;
+  original_likes?: number;
+  reposted_at: string;
+}
+
+export function getRepostHistory() {
+  return json<RepostHistoryItem[]>("/api/history/reposts");
+}
+
 export function getSettings() {
   return json<BotSettings>("/api/settings");
 }

@@ -1,0 +1,72 @@
+# VIP handles — bot prioritizes replying/quoting/reposting fresh tweets from these accounts.
+# One handle per line, no @ prefix. Lines starting with # are ignored.
+# Curated from top_active_x_accounts_ai_tech_business_startups.md
+
+# Mega influencers
+lexfridman
+sama
+karpathy
+AndrewYNg
+ID_AA_Carmack
+kaifulee
+demishassabis
+drfeifei
+GaryMarcus
+eladgil
+ylecun
+bengioy
+gdb
+OfficialLoganK
+alliekmiller
+
+# Researchers & builders
+steipete
+Thom_Wolf
+ESYudkowsky
+tunguz
+rasbt
+petitegeek
+erikbryn
+dair_ai
+askalphaxiv
+DeepLearn007
+nigewillson
+cameronrwolfe
+
+# Founders / operators / indie
+naval
+paulg
+jason
+SahilBloom
+gregisenberg
+dunkhippo33
+ArlanWasHere
+hnshah
+sweatystartup
+matshumer
+
+# VCs
+fredwilson
+cdixon
+perryazevedo
+apollovc
+
+# Business / digital
+valaafshar
+Ronald_vanLoon
+YuHelenYu
+TamaraMcCleary
+antgrasso
+
+# Organizations & labs
+OpenAI
+AnthropicAI
+DeepMind
+nvidia
+NVIDIAAI
+MetaAI
+GoogleAI
+GroqInc
+midjourney
+MIT_CSAIL
+IBMData

@@ -643,6 +643,30 @@ _CRITIC_SYSTEM = (
     "You output STRICT JSON only — no markdown, no preamble."
 )
 
+# Terms commonly muted by AI/tech-Twitter users. X's `muted_keyword_filter` hides
+# any tweet containing a viewer's muted word — so if our draft contains these,
+# we're invisible to a meaningful slice of our target audience.
+# Source: X algorithm repo + observed muting patterns in dev/AI circles.
+COMMONLY_MUTED_TERMS = [
+    # Crypto / web3 / financial speculation
+    "web3", "nft", "crypto", "blockchain", "$btc", "$eth", "memecoin", "shitcoin",
+    "polymarket", "pumpfun", "rugpull", "to the moon", "wagmi", "ngmi",
+    # AI hype phrases people mute en masse
+    "agi achieved", "we're so back", "it's over", "agi internally", "this changes everything",
+    "game changer", "10x engineer", "vibe shift",
+    # Political / divisive (we want to be apolitical for max reach)
+    "trump", "biden", "election", "maga", "woke", "liberal", "conservative",
+    # Generic LinkedIn slop most people mute
+    "thoughts?", "hot take", "unpopular opinion", "let that sink in",
+    "ratio", "this is huge", "absolutely massive", "🚨",
+]
+
+
+def find_muted_terms(text: str) -> list[str]:
+    """Return any commonly-muted terms found in the draft (case-insensitive substring)."""
+    t = text.lower()
+    return [term for term in COMMONLY_MUTED_TERMS if term in t]
+
 
 async def critique_text(
     text: str,
@@ -704,13 +728,22 @@ Return JSON only:
     # Hard cap: if grounding is weak, cap overall score so the draft regenerates
     if grounding < 7:
         score = min(score, 6)
+
+    # Muted-keyword hard cap (X algorithm muted_keyword_filter)
+    muted_hits = find_muted_terms(text)
+    issues = list(parsed.get("issues") or [])
+    if muted_hits:
+        score = min(score, 5)  # forces regenerate
+        issues.append(f"contains commonly-muted terms: {', '.join(muted_hits)}")
+
     return {
         "score": max(1, min(10, score)),
         "hook": int(parsed.get("hook", 7) or 7),
         "voice_match": int(parsed.get("voice_match", 7) or 7),
         "value": int(parsed.get("value", 7) or 7),
         "grounding": max(1, min(10, grounding)),
-        "issues": parsed.get("issues") or [],
+        "muted_terms": muted_hits,
+        "issues": issues,
         "verdict": parsed.get("verdict") or ("post" if score >= 7 else "regenerate"),
     }
 

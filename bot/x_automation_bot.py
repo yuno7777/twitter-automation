@@ -77,11 +77,26 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 CYCLE_INTERVAL_HOURS = 2
 MAX_POSTS_PER_CYCLE = int(os.getenv("MAX_POSTS_PER_CYCLE", "1"))
-MAX_REPLIES_PER_CYCLE = int(os.getenv("MAX_REPLIES_PER_CYCLE", "5"))
+# Quotes outperform replies algorithmically (they get distributed to YOUR followers'
+# feeds, not just the conversation under the OP). After analyzing the X algorithm
+# repo, we flipped the ratio: 6 replies + 4 quotes per cycle instead of 8+2.
+MAX_REPLIES_PER_CYCLE = int(os.getenv("MAX_REPLIES_PER_CYCLE", "6"))
 MAX_FOLLOWS_PER_CYCLE = int(os.getenv("MAX_FOLLOWS_PER_CYCLE", "2"))
 MAX_LIKES_PER_CYCLE = int(os.getenv("MAX_LIKES_PER_CYCLE", "10"))
-MAX_QUOTES_PER_CYCLE = int(os.getenv("MAX_QUOTES_PER_CYCLE", "1"))
+MAX_QUOTES_PER_CYCLE = int(os.getenv("MAX_QUOTES_PER_CYCLE", "4"))
+MAX_REPOSTS_PER_CYCLE = int(os.getenv("MAX_REPOSTS_PER_CYCLE", "4"))
+
+# Per-VIP guardrails: X's algorithm has an exponential diversity penalty when the
+# same author appears repeatedly in any viewer's feed. Hitting one VIP 5x in a cycle
+# = the 4th and 5th actions are near-zero leverage AND we look botty to the OP.
+MAX_ACTIONS_PER_VIP_PER_CYCLE = int(os.getenv("MAX_ACTIONS_PER_VIP_PER_CYCLE", "1"))
+MAX_ACTIONS_PER_VIP_PER_DAY = int(os.getenv("MAX_ACTIONS_PER_VIP_PER_DAY", "2"))
 MAX_FOLLOW_UPS_PER_CYCLE = int(os.getenv("MAX_FOLLOW_UPS_PER_CYCLE", "2"))
+
+# Fraction of replies that should target the VIP list. Rest go to broad search.
+VIP_REPLY_RATIO = float(os.getenv("VIP_REPLY_RATIO", "0.7"))
+# Max tweet age (minutes) when scanning VIP timelines for fresh hot tweets.
+VIP_MAX_AGE_MIN = int(os.getenv("VIP_MAX_AGE_MIN", "60"))
 
 NICHE = os.getenv("NICHE", "AI, automation, and tech").strip()
 X_HANDLE = os.getenv("X_HANDLE", "").strip().lstrip("@")
@@ -93,6 +108,67 @@ CREATORS_TO_STUDY = [
     h.strip().lstrip("@") for h in os.getenv("CREATORS_TO_STUDY", "").split(",")
     if h.strip()
 ]
+
+
+def _load_vip_handles() -> list[str]:
+    """Load the VIP handle list from bot/vip_handles.txt. One handle per line.
+    Lines starting with # or blank are ignored. @ prefix is stripped."""
+    path = Path(__file__).resolve().parent / "vip_handles.txt"
+    if not path.exists():
+        return []
+    out: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        out.append(s.lstrip("@"))
+    return out
+
+
+VIP_HANDLES = _load_vip_handles()
+
+
+def _handle_from_tweet_url(url: str) -> str | None:
+    """Extract @handle from a tweet URL like https://x.com/handle/status/12345."""
+    try:
+        path = url.split("x.com/", 1)[1]
+        return path.split("/", 1)[0].lower()
+    except Exception:
+        return None
+
+
+def _vip_action_count_today(state: dict[str, Any], handle: str) -> int:
+    """Count how many actions we've taken on @handle in the last 24h."""
+    log = state.get("vip_action_log", {}).get(handle.lower(), [])
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    count = 0
+    for ts in log:
+        try:
+            if datetime.fromisoformat(ts) >= cutoff:
+                count += 1
+        except Exception:
+            continue
+    return count
+
+
+def _record_vip_action(state: dict[str, Any], handle: str) -> None:
+    """Append an action timestamp to a VIP's log. Trims to last 50 entries per handle."""
+    state.setdefault("vip_action_log", {})
+    log = state["vip_action_log"].setdefault(handle.lower(), [])
+    log.insert(0, datetime.now(timezone.utc).isoformat())
+    state["vip_action_log"][handle.lower()] = log[:50]
+
+
+def _vip_allowed(state: dict[str, Any], handle: str | None, this_cycle: set[str]) -> bool:
+    """True if this VIP has budget left this cycle AND today."""
+    if not handle:
+        return True  # not a VIP URL, no cap applies
+    h = handle.lower()
+    if h in this_cycle and MAX_ACTIONS_PER_VIP_PER_CYCLE <= 1:
+        return False
+    if _vip_action_count_today(state, h) >= MAX_ACTIONS_PER_VIP_PER_DAY:
+        return False
+    return True
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -175,10 +251,13 @@ DEFAULT_STATE: dict[str, Any] = {
     "follow_history": [],
     "like_history": [],
     "quote_history": [],
+    "repost_history": [],
+    "reposted_tweet_ids": [],
     "follow_up_history": [],
     "top_tweets": [],            # best-performing recent own tweets
     "bottom_tweets": [],         # worst-performing recent own tweets (negative reference)
     "responded_thread_ids": [],  # threads where we already did a follow-up
+    "vip_action_log": {},        # {handle: [iso_ts, ...]} — per-VIP action history for daily cap
     "draft_queue": [],           # off-hours drafts pending your approval
     "critic_log": [],            # last 50 critic decisions for the dashboard
     # Trend-discovery memory — grows over time, drives smarter searches
@@ -195,6 +274,9 @@ DEFAULT_STATE: dict[str, Any] = {
         "total_replies": 0,
         "total_follows": 0,
         "total_likes": 0,
+        "total_quotes": 0,
+        "total_reposts": 0,
+        "total_follow_ups": 0,
         "llm_calls_today": 0,
         "cycles_run": 0,
     },
@@ -1606,6 +1688,168 @@ async def post_quote_tweet(page: Page, candidate: TweetCandidate, text: str) -> 
 
 
 # ---------------------------------------------------------------------------
+# VIP-timeline discovery + scoring + repost flow
+# ---------------------------------------------------------------------------
+
+async def discover_vip_recent_tweets(page: Page, handle: str, max_age_min: int = VIP_MAX_AGE_MIN) -> list[TweetCandidate]:
+    """Scrape a VIP's profile timeline for fresh tweets (under max_age_min)."""
+    url = f"https://x.com/{handle}"
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await jitter(3, 6)
+        await page.wait_for_selector(SELECTORS["tweet_card"], timeout=15000)
+    except Exception as e:
+        logger.warning(f"VIP timeline @{handle} did not load: {e}")
+        return []
+
+    # Light scroll to load a few more
+    for _ in range(2):
+        await page.mouse.wheel(0, random.randint(400, 900))
+        await jitter(0.8, 1.6)
+
+    cards = await page.query_selector_all(SELECTORS["tweet_card"])
+    out: list[TweetCandidate] = []
+    for card in cards[:10]:
+        try:
+            text_el = await card.query_selector(SELECTORS["tweet_text"])
+            text = (await text_el.inner_text()) if text_el else ""
+            if not text or len(text) < 15:
+                continue
+
+            link_el = await card.query_selector('a[href*="/status/"]')
+            href = await link_el.get_attribute("href") if link_el else None
+            if not href:
+                continue
+            # Filter out retweets / pinned older tweets — only same-author status links
+            if f"/{handle.lower()}/status/" not in href.lower():
+                continue
+            tweet_url = "https://x.com" + href if href.startswith("/") else href
+
+            like_el = await card.query_selector(f'{SELECTORS["like_btn"]} span')
+            likes_text = (await like_el.inner_text()).strip() if like_el else "0"
+            likes = _parse_count(likes_text)
+
+            time_el = await card.query_selector("time")
+            age_min = 9999
+            if time_el:
+                dt_attr = await time_el.get_attribute("datetime")
+                if dt_attr:
+                    try:
+                        posted = datetime.fromisoformat(dt_attr.replace("Z", "+00:00"))
+                        age_min = int((datetime.now(timezone.utc) - posted).total_seconds() / 60)
+                    except Exception:
+                        pass
+
+            if age_min > max_age_min:
+                continue
+
+            out.append(TweetCandidate(
+                url=tweet_url, text=text, likes=likes,
+                age_minutes=age_min, element_handle=card,
+            ))
+        except Exception as e:
+            logger.debug(f"Skipping VIP card @{handle}: {e}")
+    return out
+
+
+async def gather_vip_candidates(page: Page, handles: list[str], cap_per_handle: int = 3) -> list[TweetCandidate]:
+    """Walk a sample of VIP handles and pool their fresh tweets.
+    We sample ~6 per cycle (not all 50+) to keep cycle time reasonable."""
+    if not handles:
+        return []
+    sample = random.sample(handles, min(6, len(handles)))
+    pool: list[TweetCandidate] = []
+    for h in sample:
+        try:
+            cands = await discover_vip_recent_tweets(page, h)
+            for c in cands[:cap_per_handle]:
+                # tag the handle inside the url field for downstream logging
+                pool.append(c)
+            await jitter(1.5, 3.0)  # gentle pacing between profile loads
+        except Exception as e:
+            logger.debug(f"VIP gather @{h} failed: {e}")
+    return pool
+
+
+def score_reply_candidate(c: TweetCandidate, is_vip: bool) -> float:
+    """Combined score: authority × recency × engagement-velocity.
+    VIPs get 2x multiplier. Fresh + early-curve > absolute likes."""
+    if c.age_minutes <= 30:
+        recency = 1.0
+    elif c.age_minutes <= 60:
+        recency = 0.6
+    elif c.age_minutes <= 120:
+        recency = 0.25
+    else:
+        recency = 0.05
+    authority = 2.0 if is_vip else 1.0
+    velocity = c.likes / max(c.age_minutes, 5)  # likes per minute, floor at 5min
+    return authority * recency * (1 + velocity)
+
+
+async def is_on_niche(text: str, state: dict[str, Any]) -> bool:
+    """LLM micro-check: is this tweet on-brand for our niche?
+    Returns True for AI/tech/startup/builder content, False for off-topic (personal, political, sports).
+    Fails open (returns True) on LLM error — we'd rather repost a marginal one than skip everything."""
+    prompt = (
+        f"Niche: {NICHE}\n\n"
+        f"Tweet:\n{text[:500]}\n\n"
+        f"Is this tweet on-niche? Answer ONLY 'yes' or 'no'. "
+        f"Off-niche includes: personal life, sports, politics, crypto/gambling pumps, religion. "
+        f"On-niche includes: AI, ML, tools, startups, builder content, tech news, productivity."
+    )
+    try:
+        resp = await call_llm(prompt, "You classify tweets as on-niche or off-niche. Reply with one word.", state)
+        if not resp:
+            return True
+        return resp.strip().lower().startswith("y")
+    except Exception:
+        return True
+
+
+async def post_repost(page: Page, candidate: TweetCandidate) -> bool:
+    """Plain repost (no quote). Click retweet button → click 'Repost' menu item."""
+    if DRY_RUN:
+        logger.info(f"[DRY_RUN] Would repost {candidate.url}")
+        return True
+    try:
+        await page.goto(candidate.url, wait_until="domcontentloaded", timeout=30000)
+        await jitter(3, 6)
+        await random_mouse_move(page)
+
+        await page.wait_for_selector(SELECTORS["retweet_btn"], timeout=10000)
+        await page.click(SELECTORS["retweet_btn"])
+        await jitter(0.8, 1.6)
+
+        # Menu has "Repost" and "Quote" items. We want Repost.
+        clicked = False
+        for selector in (
+            '[data-testid="retweetConfirm"]',
+            'div[role="menuitem"]:has-text("Repost")',
+            'div[role="menuitem"] >> text=Repost',
+        ):
+            try:
+                await page.click(selector, timeout=4000)
+                clicked = True
+                break
+            except Exception:
+                continue
+        if not clicked:
+            raise RuntimeError("Could not find Repost menu item.")
+        await jitter(2, 4)
+        logger.info(f"Reposted {candidate.url}")
+        return True
+    except Exception as e:
+        path = SCREENSHOT_DIR / f"repost_fail_{int(time.time())}.png"
+        try:
+            await page.screenshot(path=str(path))
+        except Exception:
+            pass
+        logger.warning(f"Repost failed: {e}. Screenshot: {path}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Conversation continuation
 # ---------------------------------------------------------------------------
 
@@ -2092,6 +2336,28 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         await long_wait(10, 12, state, "Spacing between posts")
 
             # --- Replies (highest growth lever — do many) ---
+            # Strategy: pre-fetch a pool of VIP candidates ONCE (expensive — visits ~6 profiles),
+            # then on each reply iteration we pick the best unreplied one, falling back to
+            # broad search if the VIP pool runs dry. This way we don't re-scrape VIPs N times.
+            vip_pool: list[tuple[TweetCandidate, bool]] = []  # (candidate, is_vip)
+            vip_actions_this_cycle: set[str] = set()  # handles we've acted on this cycle
+            if MAX_REPLIES_PER_CYCLE > 0 and VIP_HANDLES and VIP_REPLY_RATIO > 0:
+                set_action(state, f"Scanning {min(6, len(VIP_HANDLES))} VIP timelines for fresh tweets")
+                vip_cands = await gather_vip_candidates(page, VIP_HANDLES)
+                vip_cands = [c for c in vip_cands if c.url not in state.get("replied_tweet_ids", [])]
+                # Pre-filter: drop VIPs already at their daily cap
+                vip_cands_filtered = []
+                for c in vip_cands:
+                    h = _handle_from_tweet_url(c.url)
+                    if h and _vip_action_count_today(state, h) >= MAX_ACTIONS_PER_VIP_PER_DAY:
+                        continue
+                    vip_cands_filtered.append(c)
+                dropped = len(vip_cands) - len(vip_cands_filtered)
+                if dropped:
+                    logger.info(f"VIP daily cap dropped {dropped} candidates already at 2 actions/24h.")
+                vip_pool = [(c, True) for c in vip_cands_filtered]
+                logger.info(f"VIP pool: {len(vip_pool)} fresh candidates after cap filter.")
+
             if MAX_REPLIES_PER_CYCLE > 0:
                 if not await respect_control(state):
                     return
@@ -2104,29 +2370,59 @@ async def run_cycle(state: dict[str, Any]) -> None:
                 for r_idx in range(MAX_REPLIES_PER_CYCLE):
                     if not await respect_control(state):
                         return
-                    available = [q for q in reply_pool if q not in used_queries]
-                    if not available:
-                        available = reply_pool
-                    query = random.choice(available)
-                    used_queries.add(query)
 
-                    set_action(state, f"Reply {r_idx+1}/{MAX_REPLIES_PER_CYCLE}: searching '{query}'")
-                    cands = await discover_reply_candidates(page, query)
-                    record_query_run(state, query, "reply", len(cands))
-                    # Filter: fresh (under 90 min), rising (5-500 likes — avoid mega-viral), not replied
-                    cands = [
-                        c for c in cands
-                        if 5 <= c.likes <= 500
-                        and c.age_minutes <= 90
-                        and c.url not in state["replied_tweet_ids"]
-                    ]
-                    if not cands:
-                        logger.info(f"No fresh reply candidates for '{query}'.")
+                    # Decide: VIP or broad-search this iteration?
+                    use_vip = bool(vip_pool) and random.random() < VIP_REPLY_RATIO
+                    cands_scored: list[tuple[TweetCandidate, bool]] = []
+
+                    if use_vip and vip_pool:
+                        # Pull top-scored VIP candidates whose author hasn't been acted on this cycle
+                        vip_pool.sort(key=lambda x: score_reply_candidate(x[0], True), reverse=True)
+                        picked = None
+                        for i, (c, _) in enumerate(vip_pool):
+                            h = _handle_from_tweet_url(c.url)
+                            if _vip_allowed(state, h, vip_actions_this_cycle):
+                                picked = vip_pool.pop(i)
+                                break
+                        if picked is None:
+                            logger.info("All VIPs in pool already used this cycle — falling through to broad search.")
+                            use_vip = False
+                        else:
+                            cands_scored = [picked]
+                            set_action(state, f"Reply {r_idx+1}/{MAX_REPLIES_PER_CYCLE}: VIP target")
+
+                    if not use_vip:
+                        available = [q for q in reply_pool if q not in used_queries]
+                        if not available:
+                            available = reply_pool
+                        query = random.choice(available)
+                        used_queries.add(query)
+
+                        set_action(state, f"Reply {r_idx+1}/{MAX_REPLIES_PER_CYCLE}: searching '{query}'")
+                        cands = await discover_reply_candidates(page, query)
+                        record_query_run(state, query, "reply", len(cands))
+                        # Broad-search filter unchanged: fresh (under 90 min), rising (5-500 likes)
+                        cands = [
+                            c for c in cands
+                            if 5 <= c.likes <= 500
+                            and c.age_minutes <= 90
+                            and c.url not in state["replied_tweet_ids"]
+                        ]
+                        cands_scored = [(c, False) for c in cands]
+
+                    if not cands_scored:
+                        logger.info(f"No fresh reply candidates this slot (use_vip={use_vip}).")
+                        # If we wanted VIP and got nothing, the user asked for skip-and-broaden:
+                        # try once more from broad-search on next loop iteration (no special handling needed —
+                        # use_vip will re-roll false next time since vip_pool is empty).
                         continue
 
-                    # Smart analyzer: classify each candidate + pick best (#2, #8, #9 combined)
-                    cands.sort(key=lambda x: x.likes, reverse=True)
-                    top5 = cands[:5]
+                    # Score everything and pick top 5 for the analyzer
+                    cands_scored.sort(key=lambda x: score_reply_candidate(x[0], x[1]), reverse=True)
+                    top5_tuples = cands_scored[:5]
+                    top5 = [t[0] for t in top5_tuples]
+
+                    # Smart analyzer: classify each candidate + pick best
                     cand_dicts = [
                         {"idx": i, "text": c.text, "likes": c.likes, "age_minutes": c.age_minutes}
                         for i, c in enumerate(top5)
@@ -2135,8 +2431,9 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         cand_dicts, NICHE,
                         lambda u, s: call_llm(u, s, state),
                     )
+                    source_label = "VIP" if use_vip else "search"
                     if not analysis:
-                        logger.info(f"Analyzer rejected all candidates for '{query}'.")
+                        logger.info(f"Analyzer rejected all candidates ({source_label}).")
                         continue
                     best_idx = analysis["best_idx"]
                     if best_idx is None or best_idx >= len(top5):
@@ -2174,6 +2471,11 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         state["stats"]["total_replies"] += 1
                         state["replied_tweet_ids"].append(best.url)
                         state["replied_tweet_ids"] = state["replied_tweet_ids"][-500:]
+                        # Per-VIP cap bookkeeping
+                        h = _handle_from_tweet_url(best.url)
+                        if h:
+                            vip_actions_this_cycle.add(h)
+                            _record_vip_action(state, h)
                         state["reply_history"].insert(0, {
                             "reply_text": reply,
                             "original_tweet_url": best.url,
@@ -2186,43 +2488,144 @@ async def run_cycle(state: dict[str, Any]) -> None:
                     if r_idx < MAX_REPLIES_PER_CYCLE - 1:
                         await long_wait(10, 12, state, "Spacing between replies")
 
-            # --- Quote-tweet (1 per cycle, only peak hours) ---
+            # --- Quote-tweets (N per cycle, no peak-hours gate) ---
+            # Pool: VIP fresh tweets with engagement (likes >= 20) + broad-search viral pool fallback.
             quotes_made = 0
-            if is_peak and MAX_QUOTES_PER_CYCLE > 0:
-                if not await respect_control(state):
-                    return
-                await long_wait(10, 12, state, "Cooldown before quote-tweet")
-                q_query = random.choice(QUOTE_SEARCH_QUERIES)
-                set_action(state, f"Searching viral tweets to quote: '{q_query}'")
-                q_cands = await discover_quote_candidates(page, q_query)
-                q_cands = [c for c in q_cands if c.url not in state.get("replied_tweet_ids", [])]
-                if q_cands:
-                    q_cands.sort(key=lambda x: x.likes, reverse=True)
-                    target = q_cands[0]
-                    set_action(state, "Generating quote-tweet")
+            if MAX_QUOTES_PER_CYCLE > 0:
+                # Build the candidate pool: VIPs first (high authority), then broad search to fill
+                quote_pool: list[TweetCandidate] = []
+                if VIP_HANDLES:
+                    # Reuse any vip_pool entries we didn't burn on replies; otherwise rescan a small sample
+                    if vip_pool:
+                        quote_pool = [c for c, _ in vip_pool if c.likes >= 20]
+                    else:
+                        rescan = await gather_vip_candidates(page, VIP_HANDLES, cap_per_handle=2)
+                        quote_pool = [c for c in rescan if c.likes >= 20]
+                if not quote_pool:
+                    q_query = random.choice(QUOTE_SEARCH_QUERIES)
+                    set_action(state, f"Quote fallback: searching '{q_query}'")
+                    quote_pool = await discover_quote_candidates(page, q_query)
+
+                quote_pool = [c for c in quote_pool if c.url not in state.get("replied_tweet_ids", [])
+                              and c.url not in state.get("reposted_tweet_ids", [])]
+                # Per-VIP daily cap pre-filter
+                quote_pool = [
+                    c for c in quote_pool
+                    if _vip_action_count_today(state, _handle_from_tweet_url(c.url) or "") < MAX_ACTIONS_PER_VIP_PER_DAY
+                ]
+                quote_pool.sort(key=lambda c: score_reply_candidate(c, True), reverse=True)
+
+                for q_idx in range(MAX_QUOTES_PER_CYCLE):
+                    # Skip past quote candidates whose author was already acted on this cycle
+                    target = None
+                    while quote_pool:
+                        cand = quote_pool.pop(0)
+                        h = _handle_from_tweet_url(cand.url)
+                        if _vip_allowed(state, h, vip_actions_this_cycle):
+                            target = cand
+                            break
+                    if target is None:
+                        logger.info("Quote pool exhausted (or all hit per-cycle cap).")
+                        break
+                    if not await respect_control(state):
+                        return
+                    await long_wait(10, 12, state, f"Cooldown before quote {q_idx+1}")
+                    set_action(state, f"Generating quote-tweet {q_idx+1}/{MAX_QUOTES_PER_CYCLE}")
                     quote_text = await _gate_with_critic(
                         generator=lambda: generate_quote(target.text, state),
                         serializer=lambda x: x or "",
                         role="quote",
                         state=state,
                     )
-                    if quote_text:
-                        set_action(state, "Posting quote-tweet")
-                        if await post_quote_tweet(page, target, quote_text):
-                            quotes_made += 1
-                            state["stats"]["total_quotes"] = state["stats"].get("total_quotes", 0) + 1
-                            state["quote_history"].insert(0, {
-                                "quote_text": quote_text,
-                                "original_tweet_url": target.url,
-                                "original_tweet_text": target.text[:200],
-                                "original_likes": target.likes,
-                                "posted_at": datetime.now(timezone.utc).isoformat(),
-                            })
-                            state["quote_history"] = state["quote_history"][:200]
-                            state["replied_tweet_ids"].append(target.url)
-                            save_state(state)
-                else:
-                    logger.info(f"No quote candidates for '{q_query}'.")
+                    if not quote_text:
+                        continue
+                    set_action(state, f"Posting quote-tweet {q_idx+1}")
+                    if await post_quote_tweet(page, target, quote_text):
+                        quotes_made += 1
+                        state["stats"]["total_quotes"] = state["stats"].get("total_quotes", 0) + 1
+                        state["quote_history"].insert(0, {
+                            "quote_text": quote_text,
+                            "original_tweet_url": target.url,
+                            "original_tweet_text": target.text[:200],
+                            "original_likes": target.likes,
+                            "posted_at": datetime.now(timezone.utc).isoformat(),
+                        })
+                        state["quote_history"] = state["quote_history"][:200]
+                        state["replied_tweet_ids"].append(target.url)
+                        h = _handle_from_tweet_url(target.url)
+                        if h:
+                            vip_actions_this_cycle.add(h)
+                            _record_vip_action(state, h)
+                        save_state(state)
+
+            # --- Plain reposts (VIP-only, LLM niche-gated) ---
+            reposts_made = 0
+            if MAX_REPOSTS_PER_CYCLE > 0 and VIP_HANDLES:
+                if not await respect_control(state):
+                    return
+                await long_wait(8, 11, state, "Cooldown before reposts")
+                # Reuse vip_pool leftovers + rescan if needed. Reposts care less about freshness (< 2h fine).
+                repost_pool: list[TweetCandidate] = []
+                if vip_pool:
+                    repost_pool = [c for c, _ in vip_pool]
+                if len(repost_pool) < MAX_REPOSTS_PER_CYCLE:
+                    extra = await gather_vip_candidates(page, VIP_HANDLES, cap_per_handle=2)
+                    seen = {c.url for c in repost_pool}
+                    repost_pool.extend(c for c in extra if c.url not in seen)
+                # Filter: not already reposted/replied, MUST be < 30 min old.
+                # Past 30 min, X's retweet_deduplication_filter + previously_seen_posts_filter
+                # mean a repost reaches almost zero new eyeballs (the OP's network already saw it).
+                repost_pool = [
+                    c for c in repost_pool
+                    if c.url not in state.get("reposted_tweet_ids", [])
+                    and c.url not in state.get("replied_tweet_ids", [])
+                    and c.age_minutes <= 30
+                    and _vip_action_count_today(state, _handle_from_tweet_url(c.url) or "") < MAX_ACTIONS_PER_VIP_PER_DAY
+                ]
+                # Highest authority/velocity first
+                repost_pool.sort(key=lambda c: score_reply_candidate(c, True), reverse=True)
+
+                for rp_idx in range(MAX_REPOSTS_PER_CYCLE):
+                    # Skip past candidates whose author was already acted on this cycle
+                    target = None
+                    while repost_pool:
+                        cand = repost_pool.pop(0)
+                        h = _handle_from_tweet_url(cand.url)
+                        if _vip_allowed(state, h, vip_actions_this_cycle):
+                            target = cand
+                            break
+                    if target is None:
+                        logger.info("Repost pool exhausted (or all hit per-cycle cap).")
+                        break
+                    if not await respect_control(state):
+                        return
+                    set_action(state, f"Niche-check repost candidate {rp_idx+1}")
+                    on_niche = await is_on_niche(target.text, state)
+                    if not on_niche:
+                        logger.info(f"Repost skipped — off-niche: {target.text[:80]}")
+                        # Mark to avoid re-checking it next cycle
+                        state.setdefault("reposted_tweet_ids", []).append(target.url)
+                        continue
+                    set_action(state, f"Reposting {rp_idx+1}/{MAX_REPOSTS_PER_CYCLE}")
+                    if await post_repost(page, target):
+                        reposts_made += 1
+                        state["stats"]["total_reposts"] = state["stats"].get("total_reposts", 0) + 1
+                        state.setdefault("reposted_tweet_ids", []).append(target.url)
+                        state["reposted_tweet_ids"] = state["reposted_tweet_ids"][-500:]
+                        h = _handle_from_tweet_url(target.url)
+                        if h:
+                            vip_actions_this_cycle.add(h)
+                            _record_vip_action(state, h)
+                        state.setdefault("repost_history", []).insert(0, {
+                            "original_tweet_url": target.url,
+                            "original_tweet_text": target.text[:200],
+                            "original_likes": target.likes,
+                            "reposted_at": datetime.now(timezone.utc).isoformat(),
+                        })
+                        state["repost_history"] = state["repost_history"][:200]
+                        save_state(state)
+                    if rp_idx < MAX_REPOSTS_PER_CYCLE - 1:
+                        await long_wait(6, 9, state, "Spacing between reposts")
 
             # --- Conversation continuation: follow up on replies to your own tweets ---
             if MAX_FOLLOW_UPS_PER_CYCLE > 0:
@@ -2339,8 +2742,9 @@ async def run_cycle(state: dict[str, Any]) -> None:
 
             logger.info(
                 f"Cycle complete. Posts: {posts_made} | Replies: {replies_made} | "
-                f"Likes: {likes_made} | Quotes: {quotes_made} | "
+                f"Likes: {likes_made} | Quotes: {quotes_made} | Reposts: {reposts_made} | "
                 f"Follow-ups: {follow_ups_made} | Follows: {follows_made} | "
+                f"VIP pool size: {len(VIP_HANDLES)} | "
                 f"LLM calls: {state['stats']['llm_calls_today']} | Errors: {cycle_errors} | "
                 f"Peak hour: {is_peak} | Next cycle in ~{CYCLE_INTERVAL_HOURS}h"
             )

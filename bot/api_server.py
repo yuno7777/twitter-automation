@@ -199,6 +199,11 @@ def history_follow_ups() -> list[dict[str, Any]]:
     return read_state().get("follow_up_history", [])
 
 
+@app.get("/api/history/reposts")
+def history_reposts() -> list[dict[str, Any]]:
+    return read_state().get("repost_history", [])
+
+
 @app.get("/api/critic_log")
 def critic_log() -> list[dict[str, Any]]:
     return read_state().get("critic_log", [])

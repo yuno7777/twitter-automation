@@ -1729,12 +1729,21 @@ async def post_reply(page: Page, candidate: TweetCandidate, reply_text: str) -> 
         return True
 
     try:
-        # Click the tweet to open it (more reliable than scoping reply button on card)
-        await page.goto(candidate.url, wait_until="domcontentloaded", timeout=30000)
+        # Click the tweet to open it. Use wait_until="commit" instead of
+        # "domcontentloaded" — X's tweet pages load heavy resources and often
+        # blow past the 30s timeout. "commit" returns as soon as navigation
+        # starts; we then wait_for_selector on the actual reply button which
+        # is what we really care about.
+        try:
+            await page.goto(candidate.url, wait_until="commit", timeout=20000)
+        except Exception as nav_e:
+            # Retry once with even shorter wait
+            logger.info(f"First nav to {candidate.url} timed out; retrying with no-wait: {nav_e}")
+            await page.goto(candidate.url, wait_until="commit", timeout=15000)
         await jitter(3, 6)
         await random_mouse_move(page)
 
-        await page.wait_for_selector(SELECTORS["reply_btn"], timeout=10000)
+        await page.wait_for_selector(SELECTORS["reply_btn"], timeout=15000)
         await page.click(SELECTORS["reply_btn"])
         await jitter(1, 3)
         await page.wait_for_selector(SELECTORS["tweet_textarea"], timeout=10000)
@@ -1795,28 +1804,68 @@ async def post_quote_tweet(page: Page, candidate: TweetCandidate, text: str) -> 
         logger.info(f"[DRY_RUN] Would quote-tweet {candidate.url}: {text[:80]}")
         return True
     try:
-        await page.goto(candidate.url, wait_until="domcontentloaded", timeout=30000)
+        try:
+            await page.goto(candidate.url, wait_until="commit", timeout=20000)
+        except Exception as nav_e:
+            logger.info(f"Quote nav retry for {candidate.url}: {nav_e}")
+            await page.goto(candidate.url, wait_until="commit", timeout=15000)
         await jitter(3, 6)
         await random_mouse_move(page)
 
-        await page.wait_for_selector(SELECTORS["retweet_btn"], timeout=10000)
+        await page.wait_for_selector(SELECTORS["retweet_btn"], timeout=15000)
         await page.click(SELECTORS["retweet_btn"])
         await jitter(0.8, 1.6)
 
-        # The retweet popup has Repost + Quote items. Match by visible text.
+        # The retweet popup has Repost + Quote items. X has changed the markup
+        # multiple times so we use a layered strategy:
+        # 1. Wait for the menu to actually render
+        # 2. Try several selector variants (data-testid + role + text variants)
+        # 3. JS fallback that walks every menuitem and clicks the one matching "quote"
         clicked_quote = False
+        try:
+            await page.wait_for_selector('[role="menu"], [data-testid="Dropdown"]', timeout=5000)
+        except Exception:
+            pass  # Continue anyway — selectors below have their own timeouts
+
         for selector in (
-            'div[role="menuitem"]:has-text("Quote")',
-            'div[role="menuitem"] >> text=Quote',
+            '[role="menuitem"]:has-text("Quote")',
+            '[role="menuitem"]:has-text("Quote post")',
+            '[role="menuitem"]:has-text("Quote tweet")',
+            'div[role="menuitem"] >> text=/^Quote/i',
+            '[aria-label="Quote"]',
+            '[aria-label="Quote post"]',
         ):
             try:
-                await page.click(selector, timeout=4000)
+                await page.click(selector, timeout=2500)
                 clicked_quote = True
                 break
             except Exception:
                 continue
+
         if not clicked_quote:
-            raise RuntimeError("Could not find Quote menu item.")
+            # JS fallback: walk all menu items and click anything containing "quote"
+            try:
+                clicked_via_js = await page.evaluate("""
+                    () => {
+                        const items = document.querySelectorAll('[role="menuitem"]');
+                        for (const el of items) {
+                            const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                            if (t.includes('quote')) {
+                                el.click();
+                                return t;
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if clicked_via_js:
+                    logger.info(f"Clicked Quote via JS fallback (matched text: {clicked_via_js!r})")
+                    clicked_quote = True
+            except Exception as e:
+                logger.debug(f"JS quote-click fallback failed: {e}")
+
+        if not clicked_quote:
+            raise RuntimeError("Could not find Quote menu item (tried selectors + JS fallback).")
 
         await jitter(1, 2)
         await page.wait_for_selector(SELECTORS["tweet_textarea"], timeout=10000)
@@ -2002,7 +2051,11 @@ async def post_repost(page: Page, candidate: TweetCandidate) -> bool:
         logger.info(f"[DRY_RUN] Would repost {candidate.url}")
         return True
     try:
-        await page.goto(candidate.url, wait_until="domcontentloaded", timeout=30000)
+        try:
+            await page.goto(candidate.url, wait_until="commit", timeout=20000)
+        except Exception as nav_e:
+            logger.info(f"Repost nav retry for {candidate.url}: {nav_e}")
+            await page.goto(candidate.url, wait_until="commit", timeout=15000)
         await jitter(3, 6)
         await random_mouse_move(page)
 
@@ -2012,19 +2065,46 @@ async def post_repost(page: Page, candidate: TweetCandidate) -> bool:
 
         # Menu has "Repost" and "Quote" items. We want Repost.
         clicked = False
+        try:
+            await page.wait_for_selector('[role="menu"], [data-testid="Dropdown"]', timeout=5000)
+        except Exception:
+            pass
         for selector in (
             '[data-testid="retweetConfirm"]',
-            'div[role="menuitem"]:has-text("Repost")',
-            'div[role="menuitem"] >> text=Repost',
+            '[role="menuitem"]:has-text("Repost")',
+            '[role="menuitem"]:has-text("Repost post")',
+            'div[role="menuitem"] >> text=/^Repost/i',
+            '[aria-label="Repost"]',
         ):
             try:
-                await page.click(selector, timeout=4000)
+                await page.click(selector, timeout=2500)
                 clicked = True
                 break
             except Exception:
                 continue
         if not clicked:
-            raise RuntimeError("Could not find Repost menu item.")
+            # JS fallback for repost too
+            try:
+                hit = await page.evaluate("""
+                    () => {
+                        const items = document.querySelectorAll('[role="menuitem"]');
+                        for (const el of items) {
+                            const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                            if (t.includes('repost') && !t.includes('undo')) {
+                                el.click();
+                                return t;
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if hit:
+                    logger.info(f"Clicked Repost via JS fallback (matched: {hit!r})")
+                    clicked = True
+            except Exception as e:
+                logger.debug(f"JS repost-click fallback failed: {e}")
+        if not clicked:
+            raise RuntimeError("Could not find Repost menu item (tried selectors + JS fallback).")
         await jitter(2, 4)
         logger.info(f"Reposted {candidate.url}")
         return True
@@ -2716,29 +2796,26 @@ async def run_cycle(state: dict[str, Any]) -> None:
                 # Strategy-driven query pool (LLM-curated), falls back to baseline
                 # Sanity-filter LLM-generated queries — strip anything that looks
                 # like a hallucinated product name (e.g. 'Spiderbrain V3', 'tartarusai cli').
-                # A query is suspect if it's CamelCase + a version number, or contains
-                # an obscure single-token name with no spaces/context.
                 raw_pool = strategy.get("reply_queries") or REPLY_SEARCH_QUERIES
                 def _query_looks_real(q: str) -> bool:
                     if not q or len(q) < 3 or len(q) > 60:
                         return False
-                    # Reject any query with a version-number suffix — almost always
-                    # a hallucinated product name (e.g. 'Spiderbrain V3', 'Foo v2').
                     if re.search(r"\b[Vv]\d+\b", q):
                         return False
-                    # Reject lowercase compound 'xxxai' / 'xxxgpt' tokens — typical
-                    # LLM hallucination shape for fake AI tools.
                     tokens = q.lower().split()
                     for t in tokens:
                         if len(t) >= 6 and (t.endswith("ai") or t.endswith("gpt") or t.endswith("llm")):
-                            # Real names like 'openai', 'anthropic' won't hit this since
-                            # 'openai' is in our trusted vocab — but we can't easily check.
-                            # Allow if the token is well-known.
                             known = {"openai", "googleai", "metaai", "anthropic", "deepmind", "togetherai", "perplexityai", "mistralai"}
                             if t not in known:
                                 return False
                     return True
-                reply_pool = [q for q in raw_pool if _query_looks_real(q)] or REPLY_SEARCH_QUERIES
+                filtered = [q for q in raw_pool if _query_looks_real(q)]
+                # ALWAYS mix in baseline queries — the strategy LLM often produces queries
+                # that are too narrow ('aws architecture diagram') and yield 0 results.
+                # Baseline queries are known to return live tweets reliably.
+                reply_pool = list(dict.fromkeys(filtered + REPLY_SEARCH_QUERIES))  # de-dup, preserve order
+                if not reply_pool:
+                    reply_pool = REPLY_SEARCH_QUERIES
                 used_queries: set[str] = set()
                 for r_idx in range(MAX_REPLIES_PER_CYCLE):
                     if not await respect_control(state):
@@ -2812,22 +2889,32 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         lambda u, s: call_llm(u, s, state),
                     )
                     source_label = "VIP" if use_vip else "search"
-                    if not analysis:
-                        logger.info(f"Analyzer rejected all candidates ({source_label}).")
-                        continue
-                    best_idx = analysis["best_idx"]
-                    if best_idx is None or best_idx >= len(top5):
-                        continue
-                    best = top5[best_idx]
-                    style = analysis.get("reply_style", "offer_specific_insight")
-                    # Pull this candidate's classification/sentiment
-                    info = next((x for x in analysis.get("all", []) if x.get("idx") == best_idx), {})
-                    classification = info.get("type", "genuine")
-                    sentiment = info.get("sentiment", "neutral")
-                    logger.info(
-                        f"Reply analyzer picked idx={best_idx} "
-                        f"(type={classification}, sentiment={sentiment}, style={style})"
-                    )
+                    if not analysis or analysis.get("best_idx") is None:
+                        # For VIP candidates: they're pre-curated, don't let the
+                        # analyzer's paranoia waste a slot. Fall back to picking
+                        # the highest-scored candidate with default reply style.
+                        if use_vip and top5:
+                            logger.info(f"Analyzer rejected VIP candidates but falling back to top-scored (source={source_label}).")
+                            best = top5[0]
+                            style = "offer_specific_insight"
+                            classification = "genuine"
+                            sentiment = "neutral"
+                        else:
+                            logger.info(f"Analyzer rejected all candidates ({source_label}).")
+                            continue
+                    else:
+                        best_idx = analysis["best_idx"]
+                        if best_idx >= len(top5):
+                            continue
+                        best = top5[best_idx]
+                        style = analysis.get("reply_style", "offer_specific_insight")
+                        info = next((x for x in analysis.get("all", []) if x.get("idx") == best_idx), {})
+                        classification = info.get("type", "genuine")
+                        sentiment = info.get("sentiment", "neutral")
+                        logger.info(
+                            f"Reply analyzer picked idx={best_idx} "
+                            f"(type={classification}, sentiment={sentiment}, style={style})"
+                        )
 
                     set_action(state, f"Generating reply {r_idx+1}")
                     # Critic-gated reply generation

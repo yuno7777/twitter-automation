@@ -173,6 +173,30 @@ def _record_vip_action(state: dict[str, Any], handle: str) -> None:
     state["vip_action_log"][handle.lower()] = log[:50]
 
 
+def _record_vip_load_failure(state: dict[str, Any], handle: str) -> None:
+    """Track per-handle load failures. After 3 in 24h, treat as blacklisted."""
+    state.setdefault("vip_load_failures", {})
+    log = state["vip_load_failures"].setdefault(handle.lower(), [])
+    log.insert(0, datetime.now(timezone.utc).isoformat())
+    state["vip_load_failures"][handle.lower()] = log[:10]
+
+
+def _vip_blacklisted(state: dict[str, Any], handle: str) -> bool:
+    """True if this VIP has failed to load 3+ times in the last 24h."""
+    log = (state.get("vip_load_failures") or {}).get(handle.lower(), [])
+    if not log:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    recent_failures = 0
+    for ts in log:
+        try:
+            if datetime.fromisoformat(ts) >= cutoff:
+                recent_failures += 1
+        except Exception:
+            continue
+    return recent_failures >= 3
+
+
 def _vip_allowed(state: dict[str, Any], handle: str | None, this_cycle: set[str]) -> bool:
     """True if this VIP has budget left this cycle AND today."""
     if not handle:
@@ -351,6 +375,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "bottom_tweets": [],         # worst-performing recent own tweets (negative reference)
     "responded_thread_ids": [],  # threads where we already did a follow-up
     "vip_action_log": {},        # {handle: [iso_ts, ...]} — per-VIP action history for daily cap
+    "vip_load_failures": {},     # {handle: [iso_ts, ...]} — auto-blacklist after 3 failures in 24h
     "replied_conversation_ids": [],  # status_ids treated as conversation roots — dedup whole threads
     "own_tweet_performance": [], # [{url, text, posted_at, likes_30m, replies_30m, reposts_30m, checked_at}]
     "warm_engagers": [],         # [{handle, last_interaction_ts}] — users who recently engaged with us
@@ -1899,7 +1924,12 @@ async def post_quote_tweet(page: Page, candidate: TweetCandidate, text: str) -> 
 # VIP-timeline discovery + scoring + repost flow
 # ---------------------------------------------------------------------------
 
-async def discover_vip_recent_tweets(page: Page, handle: str, max_age_min: int = VIP_MAX_AGE_MIN) -> list[TweetCandidate]:
+async def discover_vip_recent_tweets(
+    page: Page,
+    handle: str,
+    max_age_min: int = VIP_MAX_AGE_MIN,
+    state: dict[str, Any] | None = None,
+) -> list[TweetCandidate]:
     """Scrape a VIP's profile timeline for fresh tweets (under max_age_min)."""
     url = f"https://x.com/{handle}"
     try:
@@ -1908,6 +1938,8 @@ async def discover_vip_recent_tweets(page: Page, handle: str, max_age_min: int =
         await page.wait_for_selector(SELECTORS["tweet_card"], timeout=15000)
     except Exception as e:
         logger.warning(f"VIP timeline @{handle} did not load: {e}")
+        if state is not None:
+            _record_vip_load_failure(state, handle)
         return []
 
     # Light scroll to load a few more
@@ -1970,9 +2002,20 @@ async def gather_vip_candidates(
     """Walk a sample of VIP handles and pool their fresh tweets.
     Feature 6: warm engagers (recent likers/repliers to OUR tweets) get priority slots
     in the sample — replies to warm targets convert ~3-5x better than cold VIPs.
-    We sample ~8 per cycle and prioritize VIPs not yet at their daily cap."""
+    We sample ~8 per cycle and prioritize VIPs not yet at their daily cap.
+    Auto-blacklists handles that have failed to load 3+ times in the last 24h."""
     if not handles:
         return []
+    # Pre-filter: drop handles that have repeatedly failed to load (dead/protected/throttled)
+    if state is not None:
+        before = handles
+        blacklisted_now = [h for h in handles if _vip_blacklisted(state, h)]
+        handles = [h for h in handles if h not in blacklisted_now]
+        if blacklisted_now:
+            logger.info(
+                f"VIP blacklist active: skipping {len(blacklisted_now)} handle(s) "
+                f"(3+ load failures in 24h): {', '.join('@' + h for h in blacklisted_now[:5])}"
+            )
     target_size = min(8, len(handles))
     sample: list[str] = []
     # Fill up to half the sample with warm engagers that overlap our VIP list
@@ -1999,7 +2042,7 @@ async def gather_vip_candidates(
     pool: list[TweetCandidate] = []
     for h in sample:
         try:
-            cands = await discover_vip_recent_tweets(page, h)
+            cands = await discover_vip_recent_tweets(page, h, state=state)
             for c in cands[:cap_per_handle]:
                 # tag the handle inside the url field for downstream logging
                 pool.append(c)

@@ -1686,25 +1686,29 @@ async def discover_reply_candidates(page: Page, query: str) -> list[TweetCandida
 
     cards = await page.query_selector_all(SELECTORS["tweet_card"])
     candidates: list[TweetCandidate] = []
+    # Diagnostic counters — when a search returns 0 candidates we want to know WHY
+    drops = {"ad": 0, "short_text": 0, "no_link": 0, "exception": 0}
     for card in cards[:12]:
         try:
             # Skip ads
             ad = await card.query_selector(SELECTORS["ad_marker"])
             if ad:
-                # placementTracking also matches some non-ads; the safer signal is
-                # the literal "Ad" badge inside the card.
                 text_node = await card.inner_text()
                 if "\nAd\n" in f"\n{text_node}\n":
+                    drops["ad"] += 1
                     continue
 
             text_el = await card.query_selector(SELECTORS["tweet_text"])
             text = (await text_el.inner_text()) if text_el else ""
-            if not text or len(text) < 20:
+            # Loosened: 20 -> 10 chars (was filtering legit short replies/comments)
+            if not text or len(text) < 10:
+                drops["short_text"] += 1
                 continue
 
             link_el = await card.query_selector('a[href*="/status/"]')
             href = await link_el.get_attribute("href") if link_el else None
             if not href:
+                drops["no_link"] += 1
                 continue
             tweet_url = "https://x.com" + href if href.startswith("/") else href
 
@@ -1729,8 +1733,15 @@ async def discover_reply_candidates(page: Page, query: str) -> list[TweetCandida
                 age_minutes=age_min, element_handle=card,
             ))
         except Exception as e:
+            drops["exception"] += 1
             logger.debug(f"Skipping a card: {e}")
 
+    # If we got few/no candidates, surface why so we can diagnose
+    if len(candidates) < 3:
+        logger.info(
+            f"discover_reply_candidates('{query}'): {len(cards)} cards seen, "
+            f"{len(candidates)} kept, drops={drops}"
+        )
     return candidates
 
 
@@ -2910,9 +2921,16 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         cands_scored = [(c, False) for c in cands]
 
                     if not cands_scored:
+                        # When broad-search returns 0, surface the raw count before filtering
+                        raw_count = 0
+                        try:
+                            raw_count = len(cands) if not use_vip else 0  # type: ignore
+                        except Exception:
+                            pass
                         logger.info(
                             f"REPLY SLOT {r_idx+1} EMPTY: use_vip={use_vip} "
                             f"vip_pool_size={len(vip_pool)} "
+                            f"raw_search_candidates={raw_count} "
                             f"vip_actions_today={sum(1 for h in state.get('vip_action_log', {}) if _vip_action_count_today(state, h) > 0)}"
                         )
                         continue

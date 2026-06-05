@@ -22,6 +22,13 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
     Where-Object { $_.CommandLine -like '*x_automation_bot*' -or $_.CommandLine -like '*uvicorn*api_server*' } |
     ForEach-Object { cmd /c "taskkill /F /T /PID $($_.ProcessId)" 2>$null | Out-Null }
 
+# Kill the dashboard node server — matches both `next dev` AND `next start`
+# (production), plus the npm wrapper, so a prod build is stopped too.
 Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
-    Where-Object { $_.CommandLine -like '*next*dev*' -or $_.CommandLine -like '*x-bot-dashboard*' } |
+    Where-Object {
+        $_.CommandLine -like '*next*dev*' -or
+        $_.CommandLine -like '*next*start*' -or
+        $_.CommandLine -like '*\next*' -or
+        $_.CommandLine -like '*x-bot-dashboard*'
+    } |
     ForEach-Object { cmd /c "taskkill /F /T /PID $($_.ProcessId)" 2>$null | Out-Null }

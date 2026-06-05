@@ -75,9 +75,25 @@ if (-not $botUp) {
         -Cwd (Join-Path $root "bot")
 }
 if (-not $dashUp) {
-    $pids.dashboard = Start-Hidden -Name "dashboard" `
-        -Cmd "npm run dev" `
-        -Cwd (Join-Path $root "dashboard")
+    # Serve the PRE-BUILT production bundle (pages load in ~10ms + Next prefetches
+    # links) instead of `next dev` which compiles each page on first visit (~5s).
+    # Rebuild ONLY when dashboard source is newer than the last build, so normal
+    # launches start instantly and you never see a stale UI after an update.
+    $dashDir = Join-Path $root "dashboard"
+    $buildId = Join-Path $dashDir ".next\BUILD_ID"
+    $needBuild = $true
+    if (Test-Path $buildId) {
+        $buildTime = (Get-Item $buildId).LastWriteTime
+        $srcDirs = @("app", "components", "lib") | ForEach-Object { Join-Path $dashDir $_ } | Where-Object { Test-Path $_ }
+        $srcNewest = if ($srcDirs) { Get-ChildItem -Path $srcDirs -Recurse -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1 } else { $null }
+        $cfgNewest = @("tailwind.config.ts", "next.config.mjs", "package.json", "postcss.config.mjs") |
+            ForEach-Object { Join-Path $dashDir $_ } | Where-Object { Test-Path $_ } | Get-Item -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $newest = @($srcNewest, $cfgNewest) | Where-Object { $_ } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($newest -and $newest.LastWriteTime -le $buildTime) { $needBuild = $false }
+    }
+    $dashCmd = if ($needBuild) { "npm run build && npm run start" } else { "npm run start" }
+    $pids.dashboard = Start-Hidden -Name "dashboard" -Cmd $dashCmd -Cwd $dashDir
 }
 
 $pids | ConvertTo-Json | Out-File -FilePath $pidFile -Encoding ascii

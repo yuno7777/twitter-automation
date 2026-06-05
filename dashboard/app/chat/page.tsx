@@ -195,10 +195,20 @@ export default function ChatPage() {
 
   async function onApply(a: ProposedAction) {
     try {
-      const res = await confirmAction(a.tool, a.args);
+      const res = await confirmAction(a.tool, a.args, activeId ?? undefined, a.id);
       if (res.ok) {
         toast.success(res.message);
         setAppliedIds((s) => new Set(s).add(a.id));
+        // Persist into local message state so it stays "Applied" in this view,
+        // and matches the server-stored flag when the session is reloaded.
+        setMessages((prev) =>
+          prev.map((m) => ({
+            ...m,
+            proposed_actions: m.proposed_actions?.map((pa) =>
+              pa.id === a.id ? { ...pa, applied: true } : pa
+            ),
+          }))
+        );
       } else {
         toast.error(res.message);
       }
@@ -455,7 +465,12 @@ function MessageBubble({
         {!isUser &&
           msg.proposed_actions &&
           msg.proposed_actions.map((a) => (
-            <ActionCard key={a.id} action={a} applied={appliedIds.has(a.id)} onApply={() => onApply(a)} />
+            <ActionCard
+              key={a.id}
+              action={a}
+              applied={Boolean(a.applied) || appliedIds.has(a.id)}
+              onApply={() => onApply(a)}
+            />
           ))}
       </div>
     </div>

@@ -322,6 +322,7 @@ export interface ProposedAction {
   reason: string;
   valid: boolean;
   validation_error: string | null;
+  applied?: boolean;
 }
 
 export interface ChatMessage {
@@ -388,10 +389,15 @@ export function sendChat(sessionId: string, message: string, attachments?: ChatA
   });
 }
 
-export function confirmAction(tool: string, args: Record<string, unknown>) {
+export function confirmAction(
+  tool: string,
+  args: Record<string, unknown>,
+  sessionId?: string,
+  actionId?: string
+) {
   return json<{ ok: boolean; message: string }>("/api/chat/confirm", {
     method: "POST",
-    body: JSON.stringify({ tool, args }),
+    body: JSON.stringify({ tool, args, session_id: sessionId, action_id: actionId }),
   });
 }
 

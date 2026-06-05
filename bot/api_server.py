@@ -248,7 +248,12 @@ class DraftActionBody(BaseModel):
 
 @app.get("/api/queue")
 def get_queue() -> list[dict[str, Any]]:
-    return read_state().get("draft_queue", [])
+    # Hide drafts that have already been posted or rejected (they linger briefly
+    # in state with flags so the cross-process merge stays unambiguous).
+    return [
+        d for d in read_state().get("draft_queue", [])
+        if not d.get("posted") and not d.get("rejected")
+    ]
 
 
 @app.post("/api/queue/approve")
@@ -269,10 +274,17 @@ def approve_draft(body: DraftActionBody) -> dict[str, Any]:
 
 @app.post("/api/queue/reject")
 def reject_draft(body: DraftActionBody) -> dict[str, Any]:
+    # Mark rejected (not hard-delete) so the bot's cross-process merge can't
+    # resurrect it. GET filters rejected out; the merge prunes it after 1h.
     s = read_state()
-    before = len(s.get("draft_queue", []))
-    s["draft_queue"] = [d for d in s.get("draft_queue", []) if d.get("id") != body.id]
-    if len(s["draft_queue"]) == before:
+    found = False
+    for d in s.get("draft_queue", []):
+        if d.get("id") == body.id:
+            d["rejected"] = True
+            d["rejected_at"] = datetime.now(timezone.utc).isoformat()
+            found = True
+            break
+    if not found:
         raise HTTPException(status_code=404, detail="Draft not found")
     write_state(s)
     return {"ok": True}
@@ -573,6 +585,8 @@ class ChatBody(BaseModel):
 class ConfirmBody(BaseModel):
     tool: str
     args: dict[str, Any]
+    session_id: str | None = None
+    action_id: str | None = None
 
 
 def _new_session() -> dict[str, Any]:
@@ -735,7 +749,22 @@ async def chat_endpoint(body: ChatBody) -> dict[str, Any]:
 @app.post("/api/chat/confirm")
 def chat_confirm(body: ConfirmBody) -> dict[str, Any]:
     import chat_engine
-    return chat_engine.apply_action(body.tool, body.args)
+    result = chat_engine.apply_action(body.tool, body.args)
+    # Persist the applied flag on the stored action so it survives session
+    # switches and reloads (otherwise it shows "Apply" again).
+    if result.get("ok") and body.session_id and body.action_id:
+        s = read_state()
+        for sess in s.get("chat_sessions", []):
+            if sess.get("id") != body.session_id:
+                continue
+            for m in sess.get("messages", []):
+                for a in m.get("proposed_actions", []) or []:
+                    if a.get("id") == body.action_id:
+                        a["applied"] = True
+                        a["applied_at"] = datetime.now(timezone.utc).isoformat()
+            break
+        write_state(s)
+    return result
 
 
 @app.get("/api/chat/memory")

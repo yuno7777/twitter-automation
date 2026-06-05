@@ -462,7 +462,7 @@ def load_state() -> dict[str, Any]:
 # these, so before its wholesale save it must pull in whatever the API wrote —
 # otherwise the bot's stale in-memory copy clobbers chat sessions, memory, and
 # the audit log every cycle (a cross-process race).
-_API_OWNED_KEYS = ("chat_sessions", "chat_memory", "ai_actions_log")
+_API_OWNED_KEYS = ("chat_sessions", "chat_memory", "ai_actions_log", "custom_topic_ids")
 
 
 def _merge_external_state(state: dict[str, Any]) -> None:
@@ -485,6 +485,36 @@ def _merge_external_state(state: dict[str, Any]) -> None:
         for n in state.get("ai_nudges", []):
             if n.get("id") in disk_dismissed:
                 n["dismissed"] = True
+
+    # draft_queue: written by BOTH sides — bot adds/marks-posted, API
+    # approves/edits/rejects. Merge by id (disk's API mutations win on shared
+    # ids), union the rest. Both sides use flags (posted/rejected) not hard
+    # deletes, so the union is unambiguous. Prune flagged drafts after 1h.
+    disk_drafts = {d.get("id"): d for d in disk.get("draft_queue", []) if d.get("id")}
+    merged: list[dict[str, Any]] = []
+    seen: set = set()
+    for d in state.get("draft_queue", []):
+        did = d.get("id")
+        if did in disk_drafts:
+            merged.append(disk_drafts[did])  # API mutation (approved/edited/rejected) wins
+            seen.add(did)
+        else:
+            merged.append(d)  # bot just added it this save
+    for did, d in disk_drafts.items():
+        if did not in seen:
+            merged.append(d)  # API-added (e.g. chat enqueue_tweet) the bot never saw
+    now = datetime.now(timezone.utc)
+    cleaned = []
+    for d in merged:
+        ts_key = "posted_at" if d.get("posted") else ("rejected_at" if d.get("rejected") else None)
+        if ts_key:
+            try:
+                if (now - datetime.fromisoformat(d.get(ts_key, ""))).total_seconds() > 3600:
+                    continue  # drop posted/rejected drafts older than 1h
+            except Exception:
+                pass
+        cleaned.append(d)
+    state["draft_queue"] = cleaned[:100]
 
 
 def save_state(state: dict[str, Any]) -> None:
@@ -2743,7 +2773,7 @@ async def run_cycle(state: dict[str, Any]) -> None:
 
             if is_peak and MAX_POSTS_PER_CYCLE > 0:
                 # --- First: post any drafts you approved on the dashboard ---
-                approved = [d for d in state.get("draft_queue", []) if d.get("approved")]
+                approved = [d for d in state.get("draft_queue", []) if d.get("approved") and not d.get("posted") and not d.get("rejected")]
                 for d in approved[:MAX_POSTS_PER_CYCLE]:
                     if posts_made >= MAX_POSTS_PER_CYCLE:
                         break
@@ -2770,8 +2800,12 @@ async def run_cycle(state: dict[str, Any]) -> None:
                             "kind": "approved_draft",
                         })
                         state["tweet_history"] = state["tweet_history"][:200]
-                        # Remove from queue
-                        state["draft_queue"] = [x for x in state["draft_queue"] if x.get("id") != d.get("id")]
+                        # Mark posted (not hard-delete) so the cross-process draft_queue
+                        # merge stays unambiguous. The merge prunes posted drafts after 1h.
+                        for x in state["draft_queue"]:
+                            if x.get("id") == d.get("id"):
+                                x["posted"] = True
+                                x["posted_at"] = datetime.now(timezone.utc).isoformat()
                         save_state(state)
                     if posts_made < MAX_POSTS_PER_CYCLE:
                         await long_wait(10, 12, state, "Spacing after approved draft")

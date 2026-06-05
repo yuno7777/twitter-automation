@@ -279,6 +279,29 @@ export function getRepostHistory() {
   return json<RepostHistoryItem[]>("/api/history/reposts");
 }
 
+// --- Live X account analytics (scraped from x.com/i/account_analytics) ---
+export interface AnalyticsMetric {
+  value: string;
+  delta: string | null;
+  total?: string;
+}
+export interface AccountAnalytics {
+  fetched_at?: string;
+  range?: string;
+  metrics?: Record<string, AnalyticsMetric>;
+}
+export function getAccountAnalytics() {
+  return json<AccountAnalytics>("/api/account_analytics");
+}
+
+export interface FollowerPoint {
+  date: string;
+  count: number;
+}
+export function getFollowerSeries() {
+  return json<FollowerPoint[]>("/api/follower_series");
+}
+
 export interface OwnVelocityItem {
   url: string;
   text: string;

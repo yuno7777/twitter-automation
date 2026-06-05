@@ -204,6 +204,18 @@ def history_reposts() -> list[dict[str, Any]]:
     return read_state().get("repost_history", [])
 
 
+@app.get("/api/account_analytics")
+def account_analytics() -> dict[str, Any]:
+    """Scraped X analytics overview (impressions, engagement rate, etc.)."""
+    return read_state().get("account_analytics", {})
+
+
+@app.get("/api/follower_series")
+def follower_series() -> list[dict[str, Any]]:
+    """Daily follower-count snapshots for the trend chart."""
+    return read_state().get("follower_series", [])
+
+
 @app.get("/api/own_velocity")
 def own_velocity() -> list[dict[str, Any]]:
     """Feature 4: Early-curve performance of our own recent tweets."""

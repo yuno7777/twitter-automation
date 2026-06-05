@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import useSWR from "swr";
-import { Activity, BarChart3, Brain, History, Inbox, MessageSquare, ScrollText, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { Activity, BarChart3, Brain, Gauge, History, Inbox, MessageSquare, ScrollText, Settings as SettingsIcon, Sparkles } from "lucide-react";
 import { fetcher, NudgeItem, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const nav = [
   { href: "/", label: "Overview", icon: Activity },
   { href: "/chat", label: "Friday", icon: MessageSquare },
+  { href: "/insights", label: "X Insights", icon: Gauge },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/memory", label: "Memory", icon: Brain },
   { href: "/queue", label: "Draft Queue", icon: Inbox },

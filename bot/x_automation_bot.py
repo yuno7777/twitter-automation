@@ -446,6 +446,8 @@ DEFAULT_STATE: dict[str, Any] = {
     "chat_memory": [],           # durable facts the agent remembers across all sessions
     "ai_actions_log": [],        # audit trail of changes the chat agent applied
     "ai_nudges": [],             # proactive suggestions surfaced to the owner
+    "account_analytics": {},     # scraped X analytics overview (impressions, engagement rate, etc.)
+    "follower_series": [],       # [{date, count}] daily follower snapshots for the trend chart
     "draft_queue": [],           # off-hours drafts pending your approval
     "critic_log": [],            # last 50 critic decisions for the dashboard
     # Trend-discovery memory — grows over time, drives smarter searches
@@ -1718,6 +1720,10 @@ async def check_account_health(page: Page, state: dict[str, Any]) -> dict[str, A
     health["checked_at"] = datetime.now(timezone.utc).isoformat()
     state["account_health"] = health
 
+    # Record a daily follower snapshot for the trend chart
+    if health.get("follower_count") is not None:
+        _record_follower_snapshot(state, health["follower_count"])
+
     if health["status"] == "critical":
         logger.error(f"ACCOUNT HEALTH CRITICAL: {health['warnings']} — pausing bot.")
         state["status"] = "paused"
@@ -1725,6 +1731,151 @@ async def check_account_health(page: Page, state: dict[str, Any]) -> dict[str, A
         logger.warning(f"Account health warning: {health['warnings']}")
     save_state(state)
     return health
+
+
+def _record_follower_snapshot(state: dict[str, Any], count: int) -> None:
+    """One snapshot per UTC day — keeps the latest count for today, appends new days."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    series = state.setdefault("follower_series", [])
+    if series and series[-1].get("date") == today:
+        series[-1]["count"] = count  # update today's
+    else:
+        series.append({"date": today, "count": count})
+    state["follower_series"] = series[-120:]  # ~4 months
+
+
+# ---------------------------------------------------------------------------
+# X account analytics scrape (the premium analytics overview)
+# ---------------------------------------------------------------------------
+
+X_ANALYTICS_URL = os.getenv("X_ANALYTICS_URL", "https://x.com/i/account_analytics")
+
+# Metric labels as they appear on x.com/i/account_analytics → our state keys
+_ANALYTICS_LABELS = {
+    "impressions": "impressions",
+    "engagement rate": "engagement_rate",
+    "engagements": "engagements",
+    "profile visits": "profile_visits",
+    "replies": "replies",
+    "likes": "likes",
+    "reposts": "reposts",
+    "bookmarks": "bookmarks",
+    "shares": "shares",
+    "verified followers": "verified_followers",
+    "new follows": "new_follows",
+    "follows": "follows",
+    "unfollows": "unfollows",
+    "video views": "video_views",
+    "media views": "media_views",
+}
+_VALUE_RE = re.compile(r"^[\d,]+(?:\.\d+)?\s*[KMB]?%?$")
+_DELTA_RE = re.compile(r"^[↑↓▲▼+\-]?\s*[\d,]+(?:\.\d+)?\s*[KMB]?%?$")
+
+
+def _parse_analytics_metrics(text: str) -> dict[str, Any]:
+    """Parse the analytics overview text. Cards render as label → value → delta
+    on consecutive lines, e.g. 'Impressions' / '10.4K' / '↑3K%'."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    # Drop the left-nav / app chrome — only parse the analytics content region,
+    # which begins at the "Account overview" header. This avoids matching nav
+    # items like "Bookmarks" as if they were metric cards.
+    # The metric CARDS live at the bottom, starting at "Verified followers".
+    # Everything above is nav + three charts (whose axis numbers/dates would
+    # otherwise be mis-parsed as metric values). Scope to the cards section.
+    lower = [ln.lower() for ln in lines]
+    start = 0
+    for marker in ("verified followers", "account overview"):
+        if marker in lower:
+            start = lower.index(marker)
+            break
+    if start:
+        lines = lines[start:]
+    out: dict[str, Any] = {}
+    n = len(lines)
+    for i, line in enumerate(lines):
+        key = _ANALYTICS_LABELS.get(line.lower())
+        if not key or key in out:
+            continue
+        value = delta = total = None
+        for j in range(i + 1, min(i + 3, n)):
+            cand = lines[j].replace(" ", "")
+            # "60 / 109" form (verified followers etc.) — value / total on one line
+            slash = re.match(r"^([\d,]+)/([\d,]+)$", cand)
+            if slash:
+                value, total = slash.group(1), slash.group(2)
+                break
+            if _VALUE_RE.match(cand):
+                value = lines[j]
+                if j + 1 < n:
+                    nxt = lines[j + 1].replace(" ", "")
+                    if ("↑" in nxt or "↓" in nxt or "%" in nxt) and _DELTA_RE.match(nxt):
+                        delta = lines[j + 1]
+                break
+        if value:
+            entry: dict[str, Any] = {"value": value, "delta": delta}
+            # verified followers may also render value and "/ total" on split lines
+            if total is None and key == "verified_followers":
+                for j in range(i + 1, min(i + 5, n)):
+                    mm = re.search(r"/\s*([\d,]+)", lines[j])
+                    if mm:
+                        total = mm.group(1)
+                        break
+            if total:
+                entry["total"] = total
+            out[key] = entry
+    return out
+
+
+async def scrape_account_analytics(page: Page, state: dict[str, Any]) -> None:
+    """Visit x.com/i/account_analytics and scrape the overview metric cards.
+    Reuses the bot's authenticated session — no paid API needed. Non-fatal."""
+    try:
+        await page.goto(X_ANALYTICS_URL, wait_until="commit", timeout=30000)
+    except Exception as e:
+        logger.warning(f"Analytics page nav failed: {e}")
+        return
+    # The metric CARDS are at the bottom and lazy-load their values when scrolled
+    # into view. Scroll to the bottom each pass and poll until the Verified
+    # followers card shows a real number (up to ~30s).
+    text = ""
+    for _ in range(12):
+        try:
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        except Exception:
+            pass
+        await jitter(2, 3)
+        try:
+            text = await page.inner_text("body")
+        except Exception:
+            text = ""
+        # Cards loaded once "Verified followers" is immediately followed by a digit,
+        # or we can already parse a few real metrics.
+        if re.search(r"Verified followers\s*\n\s*[\d,]", text) or len(_parse_analytics_metrics(text)) >= 4:
+            break
+
+    if not text:
+        logger.warning("Analytics page produced no text.")
+        return
+
+    metrics = _parse_analytics_metrics(text)
+    if len(metrics) < 3:
+        logger.warning(
+            f"Analytics scrape parsed only {len(metrics)} metrics — DOM may have changed. "
+            f"Sample(1500): {text[:1500]!r}"
+        )
+    if metrics:
+        # Try to detect the active time range (e.g. 'Last 30 days')
+        range_label = ""
+        m = re.search(r"Last\s+\d+\s+days|Last\s+7\s+days|Last\s+24\s+hours", text)
+        if m:
+            range_label = m.group(0)
+        state["account_analytics"] = {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "range": range_label,
+            "metrics": metrics,
+        }
+        save_state(state)
+        logger.info(f"Account analytics scraped: {len(metrics)} metrics ({range_label or 'range n/a'}).")
 
 
 async def scrape_own_top_tweets(page: Page, state: dict[str, Any]) -> None:
@@ -2721,6 +2872,14 @@ async def run_cycle(state: dict[str, Any]) -> None:
             if health["status"] == "critical":
                 logger.error("Bot paused due to account health critical — exiting cycle.")
                 return
+            await jitter(2, 4)
+
+            # Scrape the X analytics overview (impressions, engagement rate, etc.)
+            set_action(state, "Scraping X account analytics")
+            try:
+                await scrape_account_analytics(page, state)
+            except Exception as e:
+                logger.warning(f"Analytics scrape failed (non-fatal): {e}")
             await jitter(2, 4)
 
             # Self-engagement scrape (drives top-tweet feedback into next prompt)

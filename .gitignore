@@ -35,3 +35,6 @@ dashboard/tsconfig.tsbuildinfo
 # Misc
 .DS_Store
 *.log
+
+# Local agent guidance — keep on disk, don't push
+CLAUDE.md

@@ -500,7 +500,7 @@ def get_settings() -> dict[str, Any]:
         "llm_provider": os.getenv("LLM_PROVIDER", "groq"),
         "groq_primary_model": os.getenv("GROQ_PRIMARY_MODEL", "openai/gpt-oss-120b"),
         "groq_fallback_model": os.getenv("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile"),
-        "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        "gemini_model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
         "groq_primary_key_set": bool(os.getenv("GROQ_PRIMARY_API_KEY", "").strip() or os.getenv("GROQ_API_KEY", "").strip()),
         "groq_fallback_key_set": bool(os.getenv("GROQ_FALLBACK_API_KEY", "").strip() or os.getenv("GROQ_API_KEY", "").strip()),
         "cycle_interval_hours": int(os.getenv("CYCLE_INTERVAL_HOURS", "5")),
@@ -558,8 +558,15 @@ def update_settings(body: SettingsBody) -> dict[str, Any]:
 # Agentic chat
 # ---------------------------------------------------------------------------
 
+class ChatAttachment(BaseModel):
+    name: str
+    mime: str
+    data_base64: str
+
+
 class ChatBody(BaseModel):
     message: str
+    attachments: list[ChatAttachment] | None = None
 
 
 class ConfirmBody(BaseModel):
@@ -574,20 +581,37 @@ def chat_history() -> list[dict[str, Any]]:
 
 @app.post("/api/chat")
 async def chat_endpoint(body: ChatBody) -> dict[str, Any]:
+    import base64
+
     import chat_engine
+
+    # Decode attachments to bytes for the current turn only (never persisted)
+    decoded_attachments: list[dict[str, Any]] = []
+    attach_names: list[str] = []
+    for att in (body.attachments or []):
+        try:
+            raw = base64.b64decode(att.data_base64, validate=False)
+        except Exception:
+            continue
+        decoded_attachments.append({"name": att.name, "mime": att.mime, "data": raw})
+        attach_names.append(att.name)
 
     s = read_state()
     history = s.get("chat_history", [])
-    # Append the user's message first so it persists even if the LLM fails
+    # Persist a lightweight marker for attachments — never the raw bytes (keeps state lean)
+    user_content = body.message
+    if attach_names:
+        user_content = f"{body.message}\n[attached: {', '.join(attach_names)}]".strip()
     history.append({
         "role": "user",
-        "content": body.message,
+        "content": user_content,
         "ts": datetime.now(timezone.utc).isoformat(),
     })
 
     try:
         result = await chat_engine.chat(
-            [{"role": m["role"], "content": m["content"]} for m in history]
+            [{"role": m["role"], "content": m["content"]} for m in history],
+            attachments=decoded_attachments or None,
         )
     except Exception as e:
         result = {"reply": f"Chat error: {e}", "proposed_actions": []}

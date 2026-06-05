@@ -4,6 +4,7 @@ import useSWR from "swr";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  ChatAttachment,
   ChatMessage,
   NudgeItem,
   ProposedAction,
@@ -12,21 +13,46 @@ import {
   confirmAction,
   dismissNudge,
   fetcher,
-  getActionsLog,
-  getChatHistory,
   sendChat,
 } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
 import {
   AlertTriangle,
   Check,
+  FileText,
+  Image as ImageIcon,
   Info,
+  Paperclip,
   Send,
   Sparkles,
   Trash2,
   X,
   Wrench,
 } from "lucide-react";
+
+const MAX_FILE_BYTES = 6 * 1024 * 1024;
+const MAX_FILES = 4;
+const ACCEPT = "image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,text/csv";
+
+interface PendingFile {
+  name: string;
+  mime: string;
+  size: number;
+  data_base64: string;
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // strip the "data:<mime>;base64," prefix
+      resolve(result.split(",", 2)[1] || "");
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
 const SUGGESTIONS = [
   "How's the bot doing today?",
@@ -56,6 +82,8 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [appliedIds, setAppliedIds] = useState<Set<string>>(new Set());
+  const [files, setFiles] = useState<PendingFile[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const messages = history ?? [];
@@ -64,18 +92,49 @@ export default function ChatPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages.length, sending]);
 
+  async function onPickFiles(list: FileList | null) {
+    if (!list) return;
+    const next: PendingFile[] = [...files];
+    for (const f of Array.from(list)) {
+      if (next.length >= MAX_FILES) {
+        toast.error(`Max ${MAX_FILES} files`);
+        break;
+      }
+      if (f.size > MAX_FILE_BYTES) {
+        toast.error(`${f.name} is over 6MB`);
+        continue;
+      }
+      try {
+        const data = await readFileAsBase64(f);
+        next.push({ name: f.name, mime: f.type || "application/octet-stream", size: f.size, data_base64: data });
+      } catch {
+        toast.error(`Couldn't read ${f.name}`);
+      }
+    }
+    setFiles(next);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
   async function send(text: string) {
     const msg = text.trim();
-    if (!msg || sending) return;
+    if ((!msg && files.length === 0) || sending) return;
     setSending(true);
     setInput("");
+    const attached = files;
+    setFiles([]);
+    const marker = attached.length ? `\n[attached: ${attached.map((f) => f.name).join(", ")}]` : "";
     // optimistic user bubble
     mutateHistory(
-      [...messages, { role: "user", content: msg, ts: new Date().toISOString() }],
+      [...messages, { role: "user", content: (msg + marker).trim(), ts: new Date().toISOString() }],
       { revalidate: false }
     );
     try {
-      await sendChat(msg);
+      const payload: ChatAttachment[] = attached.map((f) => ({
+        name: f.name,
+        mime: f.mime,
+        data_base64: f.data_base64,
+      }));
+      await sendChat(msg || "(see attached)", payload);
       await mutateHistory();
     } catch (e: any) {
       toast.error(e.message || "Chat failed");
@@ -202,8 +261,46 @@ export default function ChatPage() {
         </details>
       )}
 
+      {/* Pending attachment chips */}
+      {files.length > 0 && (
+        <div className="shrink-0 flex flex-wrap gap-2">
+          {files.map((f, i) => (
+            <div key={i} className="glass px-2.5 py-1.5 flex items-center gap-2 text-xs">
+              {f.mime.startsWith("image/") ? (
+                <ImageIcon size={13} className="text-lavender" />
+              ) : (
+                <FileText size={13} className="text-lavender" />
+              )}
+              <span className="max-w-[160px] truncate">{f.name}</span>
+              <span className="text-muted mono">{(f.size / 1024).toFixed(0)}KB</span>
+              <button
+                onClick={() => setFiles(files.filter((_, idx) => idx !== i))}
+                className="text-muted hover:text-rose-300"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Composer */}
       <div className="shrink-0 flex items-end gap-2">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={ACCEPT}
+          multiple
+          hidden
+          onChange={(e) => onPickFiles(e.target.files)}
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          title="Attach images, PDFs, or text files"
+          className="h-12 w-12 rounded-xl glass flex items-center justify-center text-muted hover:text-lavender hover:border-lavender/40 transition"
+        >
+          <Paperclip size={18} />
+        </button>
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -214,12 +311,12 @@ export default function ChatPage() {
             }
           }}
           rows={1}
-          placeholder="Ask anything, or tell it what to change…"
+          placeholder="Ask anything, attach a screenshot, or tell it what to change…"
           className="flex-1 resize-none glass px-4 py-3 text-sm outline-none focus:border-lavender/50 max-h-32"
         />
         <button
           onClick={() => send(input)}
-          disabled={sending || !input.trim()}
+          disabled={sending || (!input.trim() && files.length === 0)}
           className="h-12 w-12 rounded-xl bg-lavender text-black flex items-center justify-center disabled:opacity-40 hover:bg-lavender-deep transition"
         >
           <Send size={18} />

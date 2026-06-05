@@ -335,10 +335,16 @@ export function getChatHistory() {
   return json<ChatMessage[]>("/api/chat/history");
 }
 
-export function sendChat(message: string) {
+export interface ChatAttachment {
+  name: string;
+  mime: string;
+  data_base64: string;
+}
+
+export function sendChat(message: string, attachments?: ChatAttachment[]) {
   return json<ChatMessage>("/api/chat", {
     method: "POST",
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, attachments: attachments?.length ? attachments : undefined }),
   });
 }
 

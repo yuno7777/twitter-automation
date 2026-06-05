@@ -535,11 +535,11 @@ async def respect_control(state: dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 #   1. Groq · openai/gpt-oss-120b           (primary — best reasoning + JSON)
 #   2. Groq · llama-3.3-70b-versatile       (Groq fallback — same provider, different model)
-#   3. Google · gemini-2.5-flash            (last-resort fallback — different provider)
+#   3. Google · gemini-3.1-flash-lite       (last-resort fallback — different provider)
 
 GROQ_PRIMARY_MODEL  = os.getenv("GROQ_PRIMARY_MODEL",  "openai/gpt-oss-120b")
 GROQ_FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile")
-GEMINI_MODEL        = os.getenv("GEMINI_MODEL",        "gemini-2.5-flash")
+GEMINI_MODEL        = os.getenv("GEMINI_MODEL",        "gemini-3.1-flash-lite")
 
 # Per-tier API keys — lets you split rate-limit budgets across two Groq accounts.
 # Falls back to the single GROQ_API_KEY if a tier-specific key isn't set.

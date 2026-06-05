@@ -308,7 +308,7 @@ Muted-term filter trips → offending phrase logged to learned avoid-list, injec
 
 #### ◆ agentic co-pilot
 
-A `/chat` page where a Gemini agent sees the entire bot brain — state, stats, critic decisions, performance — and talks it through with you. Tell it "lean into quotes, reply less" in plain English; it proposes the exact config diff and applies it on your OK. Read-free, every write needs approval.
+A `/chat` page where a Gemini 3.1 Flash-Lite agent sees the entire bot brain — state, stats, critic decisions, performance — and talks it through with you. **Attach a screenshot of your X analytics, a competitor's tweet, or a doc of ideas** and it reads them (vision + PDF). Tell it "lean into quotes, reply less" in plain English; it proposes the exact config diff and applies it on your OK. Read-free, every write needs approval.
 
 </td>
 <td valign="top">

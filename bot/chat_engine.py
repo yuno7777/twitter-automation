@@ -31,8 +31,17 @@ ROOT_DIR = BOT_DIR.parent
 ENV_PATH = ROOT_DIR / ".env"
 VIP_PATH = BOT_DIR / "vip_handles.txt"
 
-GEMINI_MODEL = os.getenv("CHAT_GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+GEMINI_MODEL = os.getenv("CHAT_GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# Multimodal attachment limits (inline data — keep well under Gemini's request cap)
+MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024   # 6 MB per file
+MAX_ATTACHMENTS = 4
+SUPPORTED_ATTACHMENT_MIMES = {
+    "image/png", "image/jpeg", "image/webp", "image/gif", "image/heic", "image/heif",
+    "application/pdf",
+    "text/plain", "text/markdown", "text/csv",
+}
 
 # Tuning knobs the chat agent is allowed to change. Anything not on this
 # allowlist is rejected even if the model proposes it.
@@ -170,14 +179,37 @@ def build_bot_context() -> str:
     return json.dumps(ctx, ensure_ascii=False, default=str)
 
 
-async def _call_gemini(prompt: str) -> str | None:
+async def _call_gemini(parts: list[Any]) -> str | None:
+    """parts: a list of prompt parts — strings and/or {'mime_type','data'} blobs
+    for images/PDFs/text files (Gemini multimodal input)."""
     if not GEMINI_API_KEY:
         return None
     import google.generativeai as genai
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel(GEMINI_MODEL)
-    result = await asyncio.to_thread(model.generate_content, prompt)
+    result = await asyncio.to_thread(model.generate_content, parts)
     return (result.text or "").strip()
+
+
+def _validate_attachments(attachments: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]], list[str]]:
+    """Returns (valid_parts, rejected_names). Each valid part is a Gemini blob
+    dict {'mime_type', 'data': bytes}."""
+    if not attachments:
+        return [], []
+    parts: list[dict[str, Any]] = []
+    rejected: list[str] = []
+    for att in attachments[:MAX_ATTACHMENTS]:
+        name = att.get("name", "file")
+        mime = (att.get("mime") or "").lower()
+        data = att.get("data")  # already-decoded bytes
+        if mime not in SUPPORTED_ATTACHMENT_MIMES:
+            rejected.append(f"{name} (unsupported type {mime or '?'})")
+            continue
+        if not data or len(data) > MAX_ATTACHMENT_BYTES:
+            rejected.append(f"{name} (too large or empty)")
+            continue
+        parts.append({"mime_type": mime, "data": data})
+    return parts, rejected
 
 
 def _parse_response(raw: str) -> dict[str, Any]:
@@ -197,21 +229,40 @@ def _parse_response(raw: str) -> dict[str, Any]:
     return parsed
 
 
-async def chat(messages: list[dict[str, str]]) -> dict[str, Any]:
+async def chat(
+    messages: list[dict[str, str]],
+    attachments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """messages: [{role: 'user'|'assistant', content: str}, ...] newest last.
+    attachments: optional list of {name, mime, data:bytes} for the CURRENT turn —
+    images/PDFs/text the model should analyze.
     Returns {reply, proposed_actions:[{id, tool, args, reason}]}."""
     context = build_bot_context()
     convo = "\n".join(
         f"{'OWNER' if m.get('role') == 'user' else 'YOU'}: {m.get('content', '')}"
         for m in messages[-12:]
     )
+    att_parts, rejected = _validate_attachments(attachments)
+    att_note = ""
+    if att_parts:
+        att_note = (
+            f"\n\nThe owner attached {len(att_parts)} file(s) (shown below as media parts). "
+            f"Analyze them in the context of the bot — e.g. an X analytics screenshot, a "
+            f"competitor's tweet, a document of ideas. Extract concrete takeaways and, where "
+            f"relevant, propose actions."
+        )
+    if rejected:
+        att_note += f"\n\n(Rejected attachments: {', '.join(rejected)}.)"
+
     prompt = (
         f"{SYSTEM_PROMPT}\n\n{TOOL_SPEC}\n\n"
         f"=== LIVE BOT CONTEXT (JSON) ===\n{context}\n\n"
-        f"=== CONVERSATION ===\n{convo}\n\n"
+        f"=== CONVERSATION ===\n{convo}{att_note}\n\n"
         f"Respond now with the strict JSON schema."
     )
-    raw = await _call_gemini(prompt)
+    # Multimodal: text prompt first, then any media blobs
+    parts: list[Any] = [prompt] + att_parts
+    raw = await _call_gemini(parts)
     if raw is None:
         return {
             "reply": "Chat is unavailable — no GEMINI_API_KEY is configured for the API server.",

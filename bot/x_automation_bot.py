@@ -410,7 +410,8 @@ DEFAULT_STATE: dict[str, Any] = {
     "daily_action_date": None,   # ISO date string used to detect midnight rollover
     "phrases_to_avoid": [],      # learned banned phrases from muted-term feedback loop
     "custom_topic_ids": [],      # extra topic tags added via the chat agent
-    "chat_history": [],          # agentic chat conversation (persists across restarts)
+    "chat_sessions": [],         # [{id, title, created_at, updated_at, messages:[...]}]
+    "chat_memory": [],           # durable facts the agent remembers across all sessions
     "ai_actions_log": [],        # audit trail of changes the chat agent applied
     "ai_nudges": [],             # proactive suggestions surfaced to the owner
     "draft_queue": [],           # off-hours drafts pending your approval
@@ -457,6 +458,35 @@ def load_state() -> dict[str, Any]:
         return json.loads(json.dumps(DEFAULT_STATE))
 
 
+# Subtrees owned exclusively by the API/chat process. The bot never writes
+# these, so before its wholesale save it must pull in whatever the API wrote —
+# otherwise the bot's stale in-memory copy clobbers chat sessions, memory, and
+# the audit log every cycle (a cross-process race).
+_API_OWNED_KEYS = ("chat_sessions", "chat_memory", "ai_actions_log")
+
+
+def _merge_external_state(state: dict[str, Any]) -> None:
+    """Overlay API-owned keys from disk onto the bot's in-memory state, so a
+    wholesale save_state() doesn't wipe data the API wrote mid-cycle."""
+    try:
+        if not STATE_PATH.exists():
+            return
+        with STATE_PATH.open("r", encoding="utf-8") as f:
+            disk = json.load(f)
+    except Exception:
+        return
+    for k in _API_OWNED_KEYS:
+        if k in disk:
+            state[k] = disk[k]
+    # ai_nudges: the bot owns the list, but the API only flips `dismissed`.
+    # Preserve dismissals so dismissed nudges don't resurrect each cycle.
+    disk_dismissed = {n.get("id") for n in disk.get("ai_nudges", []) if n.get("dismissed")}
+    if disk_dismissed:
+        for n in state.get("ai_nudges", []):
+            if n.get("id") in disk_dismissed:
+                n["dismissed"] = True
+
+
 def save_state(state: dict[str, Any]) -> None:
     """Atomic state write with Windows-aware retry.
     On Windows, os.replace() fails with WinError 5 if anything (OneDrive,
@@ -464,6 +494,8 @@ def save_state(state: dict[str, Any]) -> None:
     instant of the swap. We retry with exponential backoff — typically clears
     on attempt 2. If all retries fail, log and continue rather than crash the
     cycle; the next save attempt will recover."""
+    # Preserve API-owned subtrees written since we loaded state in memory.
+    _merge_external_state(state)
     tmp = STATE_PATH.with_suffix(".json.tmp")
     try:
         with tmp.open("w", encoding="utf-8") as f:

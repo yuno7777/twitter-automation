@@ -79,8 +79,12 @@ AVAILABLE ACTIONS (you PROPOSE these; the user approves before they run):
 6. remove_topic_id — remove a topic tag. args: {"topic": "<text>"}
 7. bot_control     — control the bot. args: {"action": "pause" | "resume" | "reset_cycle"}
 8. enqueue_tweet   — drop a manual draft into the approval queue. args: {"text": "<tweet text>"}
+9. remember        — save a durable fact/preference about the owner that should
+   persist across ALL chat sessions. args: {"fact": "<concise fact>"}
+   Use this when the owner states a lasting preference ("I prefer quotes over
+   replies", "my niche is dev tools", "never post on weekends").
 
-Only propose an action when the user clearly wants a change OR you are
+Only propose an action when the owner clearly wants a change OR you are
 confident it fixes a problem visible in the context. Always explain WHY in
 the "reason" field. Never propose editing prompt files or code.
 """
@@ -100,6 +104,9 @@ multiplier penalizes repeated authors, and muted keywords make tweets invisible.
 You MUST respond with STRICT JSON only — no markdown fences, no prose outside
 the JSON. Schema:
 {
+  "thinking": "<2-4 sentences of your reasoning: what the owner needs, what the
+               data shows, why you're proposing what you are. This is shown in a
+               collapsible 'thought process' panel, like Claude.>",
   "reply": "<your natural-language message to the owner>",
   "proposed_actions": [
     {"tool": "<tool name>", "args": {...}, "reason": "<why this helps>"}
@@ -168,6 +175,7 @@ def build_bot_context() -> str:
         "daily_action_count": s.get("daily_action_count"),
         "stats": stats,
         "current_settings": settings,
+        "persistent_memory": s.get("chat_memory") or [],  # facts learned across all sessions
         "recent_critic_decisions": critic,
         "recent_tweets": tweets,
         "recent_replies": replies,
@@ -221,7 +229,8 @@ def _parse_response(raw: str) -> dict[str, Any]:
         parsed = None
     if not parsed:
         # Model returned prose — treat the whole thing as the reply
-        return {"reply": (raw or "").strip() or "(no response)", "proposed_actions": []}
+        return {"thinking": "", "reply": (raw or "").strip() or "(no response)", "proposed_actions": []}
+    parsed.setdefault("thinking", "")
     parsed.setdefault("reply", "")
     parsed.setdefault("proposed_actions", [])
     if not isinstance(parsed["proposed_actions"], list):
@@ -265,6 +274,7 @@ async def chat(
     raw = await _call_gemini(parts)
     if raw is None:
         return {
+            "thinking": "",
             "reply": "Chat is unavailable — no GEMINI_API_KEY is configured for the API server.",
             "proposed_actions": [],
         }
@@ -285,7 +295,11 @@ async def chat(
             "validation_error": err,
         })
 
-    return {"reply": parsed.get("reply", ""), "proposed_actions": clean_actions}
+    return {
+        "thinking": parsed.get("thinking", ""),
+        "reply": parsed.get("reply", ""),
+        "proposed_actions": clean_actions,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +340,11 @@ def _validate_action(tool: str, args: dict[str, Any]) -> tuple[bool, str | None]
         t = str(args.get("text", "")).strip()
         if not t or len(t) > 280:
             return False, "tweet text must be 1-280 chars."
+        return True, None
+    if tool == "remember":
+        f = str(args.get("fact", "")).strip()
+        if not f or len(f) > 240:
+            return False, "fact must be 1-240 chars."
         return True, None
     return False, f"unknown tool '{tool}'."
 
@@ -413,6 +432,16 @@ def apply_action(tool: str, args: dict[str, Any]) -> dict[str, Any]:
         s["draft_queue"] = q[:100]
         _write_state(s)
         msg = "Queued a manual draft — review it on the Queue page."
+
+    elif tool == "remember":
+        s = _read_state()
+        mem = s.setdefault("chat_memory", [])
+        fact = str(args["fact"]).strip()
+        if fact not in mem:
+            mem.insert(0, fact)
+        s["chat_memory"] = mem[:60]
+        _write_state(s)
+        msg = f"Saved to memory: '{fact}'."
     else:
         return {"ok": False, "message": f"unknown tool '{tool}'"}
 

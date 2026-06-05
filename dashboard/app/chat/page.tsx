@@ -1,27 +1,33 @@
 "use client";
 
 import useSWR from "swr";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   ChatAttachment,
   ChatMessage,
+  ChatSessionMeta,
   NudgeItem,
   ProposedAction,
-  AiActionLogItem,
-  clearChat,
   confirmAction,
+  createSession,
+  deleteSession,
   dismissNudge,
   fetcher,
+  getSession,
+  listSessions,
   sendChat,
 } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
 import {
   AlertTriangle,
+  Brain,
   Check,
+  ChevronDown,
   FileText,
   Image as ImageIcon,
   Info,
+  MessageSquarePlus,
   Paperclip,
   Send,
   Sparkles,
@@ -32,7 +38,15 @@ import {
 
 const MAX_FILE_BYTES = 6 * 1024 * 1024;
 const MAX_FILES = 4;
-const ACCEPT = "image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,text/csv";
+const ACCEPT =
+  "image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,text/csv";
+
+const SUGGESTIONS = [
+  "How's the bot doing today?",
+  "Why are my replies low?",
+  "Lean more into quotes, less replying",
+  "What's my best-performing tweet?",
+];
 
 interface PendingFile {
   name: string;
@@ -44,27 +58,15 @@ interface PendingFile {
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      // strip the "data:<mime>;base64," prefix
-      resolve(result.split(",", 2)[1] || "");
-    };
+    reader.onload = () => resolve((reader.result as string).split(",", 2)[1] || "");
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
 }
 
-const SUGGESTIONS = [
-  "How's the bot doing today?",
-  "Why are my replies low?",
-  "Lean more into quotes, less replying",
-  "What's my best-performing tweet?",
-  "Add @swyx to the VIP list",
-];
-
 export default function ChatPage() {
-  const { data: history, mutate: mutateHistory } = useSWR<ChatMessage[]>(
-    "/api/chat/history",
+  const { data: sessions, mutate: mutateSessions } = useSWR<ChatSessionMeta[]>(
+    "/api/chat/sessions",
     fetcher,
     { refreshInterval: 0 }
   );
@@ -73,28 +75,72 @@ export default function ChatPage() {
     fetcher,
     { refreshInterval: 15000 }
   );
-  const { data: actionsLog, mutate: mutateLog } = useSWR<AiActionLogItem[]>(
-    "/api/chat/actions_log",
-    fetcher,
-    { refreshInterval: 0 }
-  );
 
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [appliedIds, setAppliedIds] = useState<Set<string>>(new Set());
   const [files, setFiles] = useState<PendingFile[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const bootstrapped = useRef(false);
 
-  const messages = history ?? [];
+  // Bootstrap: pick newest session or create one
+  useEffect(() => {
+    if (bootstrapped.current || !sessions) return;
+    bootstrapped.current = true;
+    (async () => {
+      if (sessions.length > 0) {
+        await selectSession(sessions[0].id);
+      } else {
+        const s = await createSession();
+        await mutateSessions();
+        setActiveId(s.id);
+        setMessages([]);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages.length, sending]);
+  }, [messages, sending]);
+
+  const selectSession = useCallback(async (id: string) => {
+    setActiveId(id);
+    setAppliedIds(new Set());
+    try {
+      const full = await getSession(id);
+      setMessages(full.messages || []);
+    } catch {
+      setMessages([]);
+    }
+  }, []);
+
+  async function onNewChat() {
+    const s = await createSession();
+    await mutateSessions();
+    setActiveId(s.id);
+    setMessages([]);
+    setAppliedIds(new Set());
+    setInput("");
+    setFiles([]);
+  }
+
+  async function onDeleteSession(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    await deleteSession(id);
+    const fresh = await mutateSessions();
+    if (id === activeId) {
+      if (fresh && fresh.length > 0) await selectSession(fresh[0].id);
+      else await onNewChat();
+    }
+  }
 
   async function onPickFiles(list: FileList | null) {
     if (!list) return;
-    const next: PendingFile[] = [...files];
+    const next = [...files];
     for (const f of Array.from(list)) {
       if (next.length >= MAX_FILES) {
         toast.error(`Max ${MAX_FILES} files`);
@@ -117,27 +163,31 @@ export default function ChatPage() {
 
   async function send(text: string) {
     const msg = text.trim();
-    if ((!msg && files.length === 0) || sending) return;
+    if ((!msg && files.length === 0) || sending || !activeId) return;
     setSending(true);
     setInput("");
     const attached = files;
     setFiles([]);
     const marker = attached.length ? `\n[attached: ${attached.map((f) => f.name).join(", ")}]` : "";
-    // optimistic user bubble
-    mutateHistory(
-      [...messages, { role: "user", content: (msg + marker).trim(), ts: new Date().toISOString() }],
-      { revalidate: false }
-    );
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: (msg + marker).trim(), ts: new Date().toISOString() },
+    ]);
     try {
       const payload: ChatAttachment[] = attached.map((f) => ({
         name: f.name,
         mime: f.mime,
         data_base64: f.data_base64,
       }));
-      await sendChat(msg || "(see attached)", payload);
-      await mutateHistory();
+      const reply = await sendChat(activeId, msg || "(see attached)", payload);
+      setMessages((prev) => [...prev, reply]);
+      mutateSessions(); // title may have changed
     } catch (e: any) {
       toast.error(e.message || "Chat failed");
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "Something went wrong sending that.", ts: new Date().toISOString() },
+      ]);
     } finally {
       setSending(false);
     }
@@ -149,7 +199,6 @@ export default function ChatPage() {
       if (res.ok) {
         toast.success(res.message);
         setAppliedIds((s) => new Set(s).add(a.id));
-        mutateLog();
       } else {
         toast.error(res.message);
       }
@@ -158,169 +207,184 @@ export default function ChatPage() {
     }
   }
 
-  async function onClear() {
-    await clearChat();
-    mutateHistory([], { revalidate: false });
-    setAppliedIds(new Set());
-  }
-
-  async function onDismissNudge(id: string) {
-    await dismissNudge(id);
-    mutateNudges();
-  }
-
   return (
-    <div className="max-w-4xl mx-auto h-[calc(100vh-3rem)] flex flex-col gap-4">
-      <header className="flex items-center justify-between shrink-0">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-            <Sparkles size={26} className="text-lavender" /> Co-Pilot
-          </h1>
-          <p className="text-muted text-sm">
-            Talk to your bot. It can see everything and propose changes you approve.
-          </p>
-        </div>
-        {messages.length > 0 && (
-          <button
-            onClick={onClear}
-            className="text-xs text-muted hover:text-rose-300 flex items-center gap-1 transition"
-          >
-            <Trash2 size={13} /> Clear
-          </button>
-        )}
-      </header>
-
-      {/* Proactive nudges */}
-      {nudges && nudges.length > 0 && (
-        <div className="space-y-2 shrink-0">
-          {nudges.map((n) => (
-            <NudgeCard key={n.id} nudge={n} onDismiss={() => onDismissNudge(n.id)} onAsk={() => send(n.text)} />
-          ))}
-        </div>
-      )}
-
-      {/* Conversation */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-4 pr-1">
-        {messages.length === 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-lavender to-lavender-deep flex items-center justify-center lavender-glow">
-              <Sparkles size={26} className="text-black" />
-            </div>
-            <p className="text-muted text-sm max-w-sm">
-              Ask about performance, request changes in plain English, or let it
-              flag problems. Every change needs your approval.
-            </p>
-            <div className="flex flex-wrap gap-2 justify-center max-w-lg">
-              {SUGGESTIONS.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => send(s)}
-                  className="glass px-3 py-1.5 text-xs text-muted hover:text-white hover:border-lavender/40 transition"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {messages.map((m, i) => (
-          <MessageBubble
-            key={i}
-            msg={m}
-            appliedIds={appliedIds}
-            onApply={onApply}
-          />
-        ))}
-
-        {sending && (
-          <div className="flex items-center gap-2 text-muted text-sm">
-            <span className="w-2 h-2 rounded-full bg-lavender animate-pulse" />
-            <span className="w-2 h-2 rounded-full bg-lavender animate-pulse [animation-delay:150ms]" />
-            <span className="w-2 h-2 rounded-full bg-lavender animate-pulse [animation-delay:300ms]" />
-            <span className="ml-1">thinking…</span>
-          </div>
-        )}
-      </div>
-
-      {/* Action audit log (collapsible-ish summary) */}
-      {actionsLog && actionsLog.length > 0 && (
-        <details className="glass p-3 text-xs shrink-0">
-          <summary className="cursor-pointer text-muted hover:text-white">
-            Applied changes ({actionsLog.length})
-          </summary>
-          <ul className="mt-2 space-y-1">
-            {actionsLog.slice(0, 8).map((a, i) => (
-              <li key={i} className="flex items-center gap-2 text-muted">
-                <Wrench size={11} className="text-lavender shrink-0" />
-                <span className="flex-1">{a.message}</span>
-                <span className="mono">{timeAgo(a.applied_at)}</span>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-
-      {/* Pending attachment chips */}
-      {files.length > 0 && (
-        <div className="shrink-0 flex flex-wrap gap-2">
-          {files.map((f, i) => (
-            <div key={i} className="glass px-2.5 py-1.5 flex items-center gap-2 text-xs">
-              {f.mime.startsWith("image/") ? (
-                <ImageIcon size={13} className="text-lavender" />
-              ) : (
-                <FileText size={13} className="text-lavender" />
+    <div className="h-full flex gap-4">
+      {/* Session list */}
+      <aside className="hidden md:flex w-60 shrink-0 flex-col gap-2">
+        <button
+          onClick={onNewChat}
+          className="glass px-3 py-2.5 flex items-center gap-2 text-sm hover:border-lavender/40 transition shrink-0"
+        >
+          <MessageSquarePlus size={16} className="text-lavender" />
+          New chat
+        </button>
+        <div className="flex-1 overflow-y-auto min-h-0 space-y-1 pr-1">
+          {(sessions || []).map((s) => (
+            <div
+              key={s.id}
+              onClick={() => selectSession(s.id)}
+              className={cn(
+                "group px-3 py-2 rounded-lg text-sm cursor-pointer transition flex items-center gap-2",
+                s.id === activeId
+                  ? "bg-lavender/15 text-lavender border border-lavender/30"
+                  : "text-muted hover:text-white hover:bg-white/5 border border-transparent"
               )}
-              <span className="max-w-[160px] truncate">{f.name}</span>
-              <span className="text-muted mono">{(f.size / 1024).toFixed(0)}KB</span>
+            >
+              <span className="flex-1 truncate">{s.title || "Chat"}</span>
               <button
-                onClick={() => setFiles(files.filter((_, idx) => idx !== i))}
-                className="text-muted hover:text-rose-300"
+                onClick={(e) => onDeleteSession(s.id, e)}
+                className="opacity-0 group-hover:opacity-100 text-muted hover:text-rose-300 transition"
               >
-                <X size={12} />
+                <Trash2 size={13} />
               </button>
             </div>
           ))}
         </div>
-      )}
+      </aside>
 
-      {/* Composer */}
-      <div className="shrink-0 flex items-end gap-2">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept={ACCEPT}
-          multiple
-          hidden
-          onChange={(e) => onPickFiles(e.target.files)}
-        />
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          title="Attach images, PDFs, or text files"
-          className="h-12 w-12 rounded-xl glass flex items-center justify-center text-muted hover:text-lavender hover:border-lavender/40 transition"
-        >
-          <Paperclip size={18} />
-        </button>
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send(input);
-            }
-          }}
-          rows={1}
-          placeholder="Ask anything, attach a screenshot, or tell it what to change…"
-          className="flex-1 resize-none glass px-4 py-3 text-sm outline-none focus:border-lavender/50 max-h-32"
-        />
-        <button
-          onClick={() => send(input)}
-          disabled={sending || (!input.trim() && files.length === 0)}
-          className="h-12 w-12 rounded-xl bg-lavender text-black flex items-center justify-center disabled:opacity-40 hover:bg-lavender-deep transition"
-        >
-          <Send size={18} />
-        </button>
+      {/* Conversation */}
+      <div className="flex-1 flex flex-col min-w-0">
+        <header className="flex items-center justify-between shrink-0 mb-3">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+              <Sparkles size={22} className="text-lavender" /> Co-Pilot
+            </h1>
+            <p className="text-muted text-xs">
+              Sees the whole bot · remembers across chats · proposes changes you approve
+            </p>
+          </div>
+          <button
+            onClick={onNewChat}
+            className="md:hidden glass px-2.5 py-2 text-xs flex items-center gap-1"
+          >
+            <MessageSquarePlus size={14} /> New
+          </button>
+        </header>
+
+        {/* Nudges */}
+        {nudges && nudges.length > 0 && (
+          <div className="space-y-2 shrink-0 mb-3">
+            {nudges.map((n) => (
+              <NudgeCard
+                key={n.id}
+                nudge={n}
+                onDismiss={async () => {
+                  await dismissNudge(n.id);
+                  mutateNudges();
+                }}
+                onAsk={() => send(n.text)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Messages */}
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto space-y-4 pr-1">
+          {messages.length === 0 && !sending && (
+            <div className="h-full flex flex-col items-center justify-center text-center gap-4">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-lavender to-lavender-deep flex items-center justify-center lavender-glow">
+                <Sparkles size={26} className="text-black" />
+              </div>
+              <p className="text-muted text-sm max-w-sm">
+                Ask about performance, attach an analytics screenshot, or request
+                changes in plain English. Every change needs your approval.
+              </p>
+              <div className="flex flex-wrap gap-2 justify-center max-w-lg">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => send(s)}
+                    className="glass px-3 py-1.5 text-xs text-muted hover:text-white hover:border-lavender/40 transition"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {messages.map((m, i) => (
+            <MessageBubble key={i} msg={m} appliedIds={appliedIds} onApply={onApply} />
+          ))}
+
+          {sending && <ThinkingIndicator />}
+        </div>
+
+        {/* Pending attachments */}
+        {files.length > 0 && (
+          <div className="shrink-0 flex flex-wrap gap-2 mt-3">
+            {files.map((f, i) => (
+              <div key={i} className="glass px-2.5 py-1.5 flex items-center gap-2 text-xs">
+                {f.mime.startsWith("image/") ? (
+                  <ImageIcon size={13} className="text-lavender" />
+                ) : (
+                  <FileText size={13} className="text-lavender" />
+                )}
+                <span className="max-w-[160px] truncate">{f.name}</span>
+                <span className="text-muted mono">{(f.size / 1024).toFixed(0)}KB</span>
+                <button
+                  onClick={() => setFiles(files.filter((_, idx) => idx !== i))}
+                  className="text-muted hover:text-rose-300"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Composer */}
+        <div className="shrink-0 flex items-end gap-2 mt-3">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPT}
+            multiple
+            hidden
+            onChange={(e) => onPickFiles(e.target.files)}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            title="Attach images, PDFs, or text files"
+            className="h-12 w-12 rounded-xl glass flex items-center justify-center text-muted hover:text-lavender hover:border-lavender/40 transition shrink-0"
+          >
+            <Paperclip size={18} />
+          </button>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send(input);
+              }
+            }}
+            rows={1}
+            placeholder="Ask anything, attach a screenshot, or tell it what to change…"
+            className="flex-1 resize-none glass px-4 py-3 text-sm outline-none focus:border-lavender/50 max-h-32"
+          />
+          <button
+            onClick={() => send(input)}
+            disabled={sending || (!input.trim() && files.length === 0)}
+            className="h-12 w-12 rounded-xl bg-lavender text-black flex items-center justify-center disabled:opacity-40 hover:bg-lavender-deep transition shrink-0"
+          >
+            <Send size={18} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ThinkingIndicator() {
+  return (
+    <div className="flex justify-start">
+      <div className="glass rounded-2xl rounded-bl-sm px-4 py-2.5 flex items-center gap-2 text-muted text-sm">
+        <Brain size={14} className="text-lavender animate-pulse" />
+        <span className="w-1.5 h-1.5 rounded-full bg-lavender animate-pulse" />
+        <span className="w-1.5 h-1.5 rounded-full bg-lavender animate-pulse [animation-delay:150ms]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-lavender animate-pulse [animation-delay:300ms]" />
+        <span className="ml-1">thinking…</span>
       </div>
     </div>
   );
@@ -378,30 +442,43 @@ function MessageBubble({
   const isUser = msg.role === "user";
   return (
     <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
-      <div className={cn("max-w-[85%] space-y-2", isUser && "items-end")}>
+      <div className="max-w-[85%] space-y-2">
+        {!isUser && msg.thinking ? <ThinkingBlock text={msg.thinking} /> : null}
         <div
           className={cn(
             "px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap",
-            isUser
-              ? "bg-lavender text-black rounded-br-sm"
-              : "glass rounded-bl-sm"
+            isUser ? "bg-lavender text-black rounded-br-sm" : "glass rounded-bl-sm"
           )}
         >
           {msg.content || <span className="text-muted italic">…</span>}
         </div>
-
-        {/* Proposed action cards */}
         {!isUser &&
           msg.proposed_actions &&
           msg.proposed_actions.map((a) => (
-            <ActionCard
-              key={a.id}
-              action={a}
-              applied={appliedIds.has(a.id)}
-              onApply={() => onApply(a)}
-            />
+            <ActionCard key={a.id} action={a} applied={appliedIds.has(a.id)} onApply={() => onApply(a)} />
           ))}
       </div>
+    </div>
+  );
+}
+
+function ThinkingBlock({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="text-xs">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 text-muted hover:text-lavender transition"
+      >
+        <Brain size={12} />
+        <span>Thought process</span>
+        <ChevronDown size={12} className={cn("transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="mt-1.5 pl-3 border-l-2 border-lavender/30 text-muted leading-relaxed whitespace-pre-wrap">
+          {text}
+        </div>
+      )}
     </div>
   );
 }
@@ -420,10 +497,10 @@ function ActionCard({
     .join(", ");
   return (
     <div className="glass p-3 border-lavender/30">
-      <div className="flex items-center gap-2 text-xs">
+      <div className="flex items-center gap-2 text-xs flex-wrap">
         <Wrench size={13} className="text-lavender" />
         <span className="mono text-lavender">{action.tool}</span>
-        <span className="mono text-muted">{argStr}</span>
+        <span className="mono text-muted break-all">{argStr}</span>
       </div>
       {action.reason && <p className="text-xs text-muted mt-1.5">{action.reason}</p>}
       {!action.valid && (

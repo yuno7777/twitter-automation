@@ -327,12 +327,48 @@ export interface ProposedAction {
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  thinking?: string;
   ts: string;
   proposed_actions?: ProposedAction[];
 }
 
-export function getChatHistory() {
-  return json<ChatMessage[]>("/api/chat/history");
+export interface ChatSessionMeta {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  messages: ChatMessage[];
+}
+
+export function listSessions() {
+  return json<ChatSessionMeta[]>("/api/chat/sessions");
+}
+
+export function createSession() {
+  return json<{ id: string; title: string }>("/api/chat/sessions", { method: "POST" });
+}
+
+export function getSession(id: string) {
+  return json<ChatSession>(`/api/chat/sessions/${id}`);
+}
+
+export function deleteSession(id: string) {
+  return json<{ ok: boolean }>(`/api/chat/sessions/${id}`, { method: "DELETE" });
+}
+
+export function renameSession(id: string, title: string) {
+  return json<{ ok: boolean }>(`/api/chat/sessions/${id}/rename`, {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
 }
 
 export interface ChatAttachment {
@@ -341,10 +377,14 @@ export interface ChatAttachment {
   data_base64: string;
 }
 
-export function sendChat(message: string, attachments?: ChatAttachment[]) {
+export function sendChat(sessionId: string, message: string, attachments?: ChatAttachment[]) {
   return json<ChatMessage>("/api/chat", {
     method: "POST",
-    body: JSON.stringify({ message, attachments: attachments?.length ? attachments : undefined }),
+    body: JSON.stringify({
+      session_id: sessionId,
+      message,
+      attachments: attachments?.length ? attachments : undefined,
+    }),
   });
 }
 
@@ -355,8 +395,15 @@ export function confirmAction(tool: string, args: Record<string, unknown>) {
   });
 }
 
-export function clearChat() {
-  return json<{ ok: boolean }>("/api/chat/clear", { method: "POST" });
+export function getChatMemory() {
+  return json<string[]>("/api/chat/memory");
+}
+
+export function deleteChatMemory(fact: string) {
+  return json<{ ok: boolean }>("/api/chat/memory/delete", {
+    method: "POST",
+    body: JSON.stringify({ fact }),
+  });
 }
 
 export interface AiActionLogItem {

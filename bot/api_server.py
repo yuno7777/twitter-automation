@@ -565,6 +565,7 @@ class ChatAttachment(BaseModel):
 
 
 class ChatBody(BaseModel):
+    session_id: str
     message: str
     attachments: list[ChatAttachment] | None = None
 
@@ -574,9 +575,90 @@ class ConfirmBody(BaseModel):
     args: dict[str, Any]
 
 
-@app.get("/api/chat/history")
-def chat_history() -> list[dict[str, Any]]:
-    return read_state().get("chat_history", [])
+def _new_session() -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    import uuid
+    return {
+        "id": uuid.uuid4().hex[:12],
+        "title": "New chat",
+        "created_at": now,
+        "updated_at": now,
+        "messages": [],
+    }
+
+
+def _migrate_legacy_history(s: dict[str, Any]) -> bool:
+    """One-time: fold a pre-sessions chat_history into a single session."""
+    legacy = s.get("chat_history")
+    if legacy:
+        sess = _new_session()
+        sess["title"] = "Earlier chat"
+        sess["messages"] = legacy
+        s.setdefault("chat_sessions", []).insert(0, sess)
+        s["chat_history"] = []
+        return True
+    return False
+
+
+@app.get("/api/chat/sessions")
+def list_sessions() -> list[dict[str, Any]]:
+    s = read_state()
+    if _migrate_legacy_history(s):
+        write_state(s)
+    out = []
+    for sess in s.get("chat_sessions", []):
+        out.append({
+            "id": sess["id"],
+            "title": sess.get("title", "Chat"),
+            "created_at": sess.get("created_at"),
+            "updated_at": sess.get("updated_at"),
+            "message_count": len(sess.get("messages", [])),
+        })
+    # newest first
+    out.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+    return out
+
+
+@app.post("/api/chat/sessions")
+def create_session() -> dict[str, Any]:
+    s = read_state()
+    sess = _new_session()
+    s.setdefault("chat_sessions", []).insert(0, sess)
+    write_state(s)
+    return {"id": sess["id"], "title": sess["title"]}
+
+
+@app.get("/api/chat/sessions/{session_id}")
+def get_session(session_id: str) -> dict[str, Any]:
+    s = read_state()
+    for sess in s.get("chat_sessions", []):
+        if sess["id"] == session_id:
+            return sess
+    raise HTTPException(status_code=404, detail="session not found")
+
+
+@app.delete("/api/chat/sessions/{session_id}")
+def delete_session(session_id: str) -> dict[str, Any]:
+    s = read_state()
+    before = len(s.get("chat_sessions", []))
+    s["chat_sessions"] = [x for x in s.get("chat_sessions", []) if x["id"] != session_id]
+    write_state(s)
+    return {"ok": True, "deleted": before - len(s["chat_sessions"])}
+
+
+class RenameBody(BaseModel):
+    title: str
+
+
+@app.post("/api/chat/sessions/{session_id}/rename")
+def rename_session(session_id: str, body: RenameBody) -> dict[str, Any]:
+    s = read_state()
+    for sess in s.get("chat_sessions", []):
+        if sess["id"] == session_id:
+            sess["title"] = body.title[:80]
+            write_state(s)
+            return {"ok": True}
+    raise HTTPException(status_code=404, detail="session not found")
 
 
 @app.post("/api/chat")
@@ -597,36 +679,55 @@ async def chat_endpoint(body: ChatBody) -> dict[str, Any]:
         attach_names.append(att.name)
 
     s = read_state()
-    history = s.get("chat_history", [])
-    # Persist a lightweight marker for attachments — never the raw bytes (keeps state lean)
+    sessions = s.setdefault("chat_sessions", [])
+    sess = next((x for x in sessions if x["id"] == body.session_id), None)
+    if sess is None:
+        # Auto-create if the client referenced an unknown id
+        sess = _new_session()
+        sess["id"] = body.session_id
+        sessions.insert(0, sess)
+
     user_content = body.message
     if attach_names:
         user_content = f"{body.message}\n[attached: {', '.join(attach_names)}]".strip()
-    history.append({
+    sess["messages"].append({
         "role": "user",
         "content": user_content,
         "ts": datetime.now(timezone.utc).isoformat(),
     })
+    # Auto-title from the first user message
+    if sess.get("title") in (None, "", "New chat") and body.message.strip():
+        sess["title"] = (body.message.strip()[:48] + ("…" if len(body.message.strip()) > 48 else ""))
 
     try:
         result = await chat_engine.chat(
-            [{"role": m["role"], "content": m["content"]} for m in history],
+            [{"role": m["role"], "content": m["content"]} for m in sess["messages"]],
             attachments=decoded_attachments or None,
         )
     except Exception as e:
-        result = {"reply": f"Chat error: {e}", "proposed_actions": []}
+        result = {"thinking": "", "reply": f"Chat error: {e}", "proposed_actions": []}
 
     assistant_msg = {
         "role": "assistant",
         "content": result.get("reply", ""),
+        "thinking": result.get("thinking", ""),
         "proposed_actions": result.get("proposed_actions", []),
         "ts": datetime.now(timezone.utc).isoformat(),
     }
-    history.append(assistant_msg)
 
-    # Re-read to avoid clobbering concurrent bot writes, then persist chat only
+    # Re-read to avoid clobbering concurrent bot writes, then persist this session
     s = read_state()
-    s["chat_history"] = history[-200:]
+    sessions = s.setdefault("chat_sessions", [])
+    live = next((x for x in sessions if x["id"] == sess["id"]), None)
+    if live is None:
+        sessions.insert(0, sess)
+        live = sess
+    else:
+        live["title"] = sess["title"]
+        live["messages"] = sess["messages"]
+    live["messages"].append(assistant_msg)
+    live["messages"] = live["messages"][-300:]
+    live["updated_at"] = datetime.now(timezone.utc).isoformat()
     write_state(s)
     return assistant_msg
 
@@ -637,10 +738,19 @@ def chat_confirm(body: ConfirmBody) -> dict[str, Any]:
     return chat_engine.apply_action(body.tool, body.args)
 
 
-@app.post("/api/chat/clear")
-def chat_clear() -> dict[str, Any]:
+@app.get("/api/chat/memory")
+def get_chat_memory() -> list[str]:
+    return read_state().get("chat_memory", [])
+
+
+class MemoryBody(BaseModel):
+    fact: str
+
+
+@app.post("/api/chat/memory/delete")
+def delete_chat_memory(body: MemoryBody) -> dict[str, Any]:
     s = read_state()
-    s["chat_history"] = []
+    s["chat_memory"] = [m for m in s.get("chat_memory", []) if m != body.fact]
     write_state(s)
     return {"ok": True}
 

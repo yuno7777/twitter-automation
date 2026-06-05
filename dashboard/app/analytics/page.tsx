@@ -43,12 +43,16 @@ const COLORS = {
 };
 
 const tooltipStyle = {
-  background: "rgba(10,10,15,0.95)",
-  border: "1px solid rgba(255,255,255,0.1)",
+  background: "rgba(10,10,15,0.97)",
+  border: "1px solid rgba(167,139,250,0.25)",
   borderRadius: 10,
   fontSize: 12,
-  boxShadow: "0 8px 30px rgba(0,0,0,0.5)",
+  boxShadow: "0 8px 30px rgba(0,0,0,0.6)",
 };
+// Recharts contentStyle only styles the box — item/label text inherit a dark
+// color and vanish on a dark background. Force light text explicitly.
+const tooltipItemStyle = { color: "#e9e9ee" };
+const tooltipLabelStyle = { color: "#ffffff", fontWeight: 600, marginBottom: 2 };
 
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -168,7 +172,7 @@ export default function AnalyticsPage() {
                 </defs>
                 <XAxis dataKey="label" stroke={COLORS.muted} fontSize={11} tickLine={false} axisLine={false} minTickGap={20} />
                 <YAxis stroke={COLORS.muted} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} width={36} />
-                <Tooltip contentStyle={tooltipStyle} cursor={{ stroke: "rgba(167,139,250,0.3)" }} />
+                <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} labelStyle={tooltipLabelStyle} cursor={{ stroke: "rgba(167,139,250,0.3)" }} />
                 <Area
                   type="monotone"
                   dataKey="total"
@@ -191,7 +195,7 @@ export default function AnalyticsPage() {
               <BarChart data={dow} margin={{ top: 8, right: 0, left: -28, bottom: 0 }}>
                 <XAxis dataKey="name" stroke={COLORS.muted} fontSize={10} tickLine={false} axisLine={false} />
                 <YAxis stroke={COLORS.muted} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} width={32} />
-                <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "rgba(167,139,250,0.06)" }} />
+                <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} labelStyle={tooltipLabelStyle} cursor={{ fill: "rgba(167,139,250,0.06)" }} />
                 <Bar dataKey="total" radius={[6, 6, 0, 0]}>
                   {dow.map((_, i) => (
                     <Cell key={i} fill={i === peakDowIdx ? COLORS.lavender : "rgba(167,139,250,0.18)"} />
@@ -228,7 +232,12 @@ export default function AnalyticsPage() {
                         <Cell key={i} fill={c.fill} />
                       ))}
                     </Pie>
-                    <Tooltip contentStyle={tooltipStyle} />
+                    <Tooltip
+                      contentStyle={tooltipStyle}
+                      itemStyle={tooltipItemStyle}
+                      labelStyle={tooltipLabelStyle}
+                      wrapperStyle={{ zIndex: 50 }}
+                    />
                   </PieChart>
                 </ResponsiveContainer>
                 <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
@@ -296,7 +305,7 @@ export default function AnalyticsPage() {
             <BarChart data={hourly} margin={{ top: 8, right: 8, left: -24, bottom: 0 }}>
               <XAxis dataKey="hour" stroke={COLORS.muted} fontSize={10} tickLine={false} axisLine={false} interval={1} tickFormatter={(h) => `${h}`} />
               <YAxis stroke={COLORS.muted} fontSize={11} tickLine={false} axisLine={false} allowDecimals={false} width={32} />
-              <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "rgba(167,139,250,0.06)" }} labelFormatter={(h) => `${h}:00`} />
+              <Tooltip contentStyle={tooltipStyle} itemStyle={tooltipItemStyle} labelStyle={tooltipLabelStyle} cursor={{ fill: "rgba(167,139,250,0.06)" }} labelFormatter={(h) => `${h}:00`} />
               <Bar dataKey="count" radius={[4, 4, 0, 0]}>
                 {hourly.map((_, i) => (
                   <Cell key={i} fill={i === peakHour ? COLORS.lavender : "rgba(167,139,250,0.2)"} />

@@ -287,6 +287,33 @@ def _format_avoid_phrases(state: dict[str, Any]) -> str:
         return ""
     return "PHRASES TO AVOID (learned from prior critic rejections):\n- " + "\n- ".join(avoid[:20])
 
+
+# ---------------------------------------------------------------------------
+# Proactive nudges — the bot flags problems for the chat co-pilot to surface
+# ---------------------------------------------------------------------------
+
+def emit_nudge(state: dict[str, Any], key: str, text: str, severity: str = "info") -> None:
+    """Record a proactive suggestion for the dashboard chat. De-dups on `key`
+    within a 6-hour window so we don't spam the same nudge every cycle."""
+    nudges = state.setdefault("ai_nudges", [])
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
+    for n in nudges:
+        if n.get("key") == key and not n.get("dismissed"):
+            try:
+                if datetime.fromisoformat(n["created_at"]) >= cutoff:
+                    return  # already raised recently
+            except Exception:
+                pass
+    nudges.insert(0, {
+        "id": f"{key}-{int(time.time())}",
+        "key": key,
+        "text": text,
+        "severity": severity,  # info | warning | critical
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "dismissed": False,
+    })
+    state["ai_nudges"] = nudges[:50]
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -382,6 +409,10 @@ DEFAULT_STATE: dict[str, Any] = {
     "daily_action_count": 0,     # actions taken today (reset at UTC midnight)
     "daily_action_date": None,   # ISO date string used to detect midnight rollover
     "phrases_to_avoid": [],      # learned banned phrases from muted-term feedback loop
+    "custom_topic_ids": [],      # extra topic tags added via the chat agent
+    "chat_history": [],          # agentic chat conversation (persists across restarts)
+    "ai_actions_log": [],        # audit trail of changes the chat agent applied
+    "ai_nudges": [],             # proactive suggestions surfaced to the owner
     "draft_queue": [],           # off-hours drafts pending your approval
     "critic_log": [],            # last 50 critic decisions for the dashboard
     # Trend-discovery memory — grows over time, drives smarter searches
@@ -1145,7 +1176,8 @@ def _gen_prompt_addons(state: dict[str, Any]) -> tuple[str, str]:
     """Returns (topic_block, avoid_block) — shared injection for all tweet generators.
     Feature 7: pick one explicit topic ID for sharper algorithmic routing.
     Feature 10: include learned avoid-list from past critic rejections."""
-    topic = random.choice(TOPIC_IDS)
+    topic_pool = TOPIC_IDS + (state.get("custom_topic_ids") or [])
+    topic = random.choice(topic_pool)
     topic_block = (
         f"TOPIC TAG (pick ONE — every tweet must fit cleanly into one topic for X's "
         f"topic_ids_filter to route it correctly): {topic}"
@@ -3290,6 +3322,53 @@ async def run_cycle(state: dict[str, Any]) -> None:
                 f"LLM calls: {state['stats']['llm_calls_today']} | Errors: {cycle_errors} | "
                 f"Peak hour: {is_peak} | Next cycle in ~{CYCLE_INTERVAL_HOURS}h"
             )
+
+            # --- Proactive nudges for the chat co-pilot ---
+            try:
+                # Track consecutive zero-reply cycles
+                if replies_made == 0:
+                    zr = int(state.get("_zero_reply_streak", 0)) + 1
+                    state["_zero_reply_streak"] = zr
+                    if zr >= 2:
+                        emit_nudge(
+                            state, "zero_replies",
+                            f"The last {zr} cycles posted 0 replies. The VIP pool or broad-search "
+                            f"may be starving. Want me to widen the reply filters or VIP age window?",
+                            "warning",
+                        )
+                else:
+                    state["_zero_reply_streak"] = 0
+
+                # Daily ceiling pressure
+                if _daily_ceiling_hit(state):
+                    emit_nudge(
+                        state, "daily_ceiling",
+                        f"Daily action ceiling ({MAX_DAILY_ACTIONS}) reached — engagement is paused "
+                        f"until UTC midnight. Raise MAX_DAILY_ACTIONS if you want more throughput.",
+                        "info",
+                    )
+
+                # Blacklisted VIPs
+                blacklisted = [h for h in VIP_HANDLES if _vip_blacklisted(state, h)]
+                if len(blacklisted) >= 3:
+                    emit_nudge(
+                        state, "vip_blacklist",
+                        f"{len(blacklisted)} VIP handles keep failing to load "
+                        f"({', '.join('@'+h for h in blacklisted[:5])}). Consider removing or replacing them.",
+                        "info",
+                    )
+
+                # Repeated error cycles
+                if cycle_errors >= 3:
+                    emit_nudge(
+                        state, "high_errors",
+                        f"This cycle hit {cycle_errors} errors. X may be throttling or selectors may have "
+                        f"changed. Check the logs page.",
+                        "warning",
+                    )
+                save_state(state)
+            except Exception as e:
+                logger.debug(f"Nudge emission failed (non-fatal): {e}")
 
         finally:
             try:

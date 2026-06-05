@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import useSWR from "swr";
-import { Activity, BarChart3, Brain, History, Inbox, ScrollText, Settings as SettingsIcon, Sparkles } from "lucide-react";
-import { fetcher, StatusResponse } from "@/lib/api";
+import { Activity, BarChart3, Brain, History, Inbox, MessageSquare, ScrollText, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { fetcher, NudgeItem, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const nav = [
   { href: "/", label: "Overview", icon: Activity },
+  { href: "/chat", label: "Co-Pilot", icon: MessageSquare },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/memory", label: "Memory", icon: Brain },
   { href: "/queue", label: "Draft Queue", icon: Inbox },
@@ -26,7 +27,9 @@ const dot = {
 export function Sidebar() {
   const pathname = usePathname();
   const { data } = useSWR<StatusResponse>("/api/status", fetcher, { refreshInterval: 5000 });
+  const { data: nudges } = useSWR<NudgeItem[]>("/api/nudges", fetcher, { refreshInterval: 15000 });
   const status = data?.status ?? "stopped";
+  const nudgeCount = nudges?.length ?? 0;
 
   return (
     <aside className="hidden md:flex w-64 shrink-0 flex-col gap-2 p-5 border-r border-border bg-black/60 h-screen sticky top-0">
@@ -61,7 +64,12 @@ export function Sidebar() {
               )}
             >
               <Icon size={16} />
-              {n.label}
+              <span className="flex-1">{n.label}</span>
+              {n.href === "/chat" && nudgeCount > 0 && (
+                <span className="ml-auto min-w-5 h-5 px-1.5 rounded-full bg-lavender text-black text-[11px] font-bold flex items-center justify-center">
+                  {nudgeCount}
+                </span>
+              )}
             </Link>
           );
         })}

@@ -554,6 +554,97 @@ def update_settings(body: SettingsBody) -> dict[str, Any]:
     return {"ok": True, "updated": list(env_updates.keys())}
 
 
+# ---------------------------------------------------------------------------
+# Agentic chat
+# ---------------------------------------------------------------------------
+
+class ChatBody(BaseModel):
+    message: str
+
+
+class ConfirmBody(BaseModel):
+    tool: str
+    args: dict[str, Any]
+
+
+@app.get("/api/chat/history")
+def chat_history() -> list[dict[str, Any]]:
+    return read_state().get("chat_history", [])
+
+
+@app.post("/api/chat")
+async def chat_endpoint(body: ChatBody) -> dict[str, Any]:
+    import chat_engine
+
+    s = read_state()
+    history = s.get("chat_history", [])
+    # Append the user's message first so it persists even if the LLM fails
+    history.append({
+        "role": "user",
+        "content": body.message,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+
+    try:
+        result = await chat_engine.chat(
+            [{"role": m["role"], "content": m["content"]} for m in history]
+        )
+    except Exception as e:
+        result = {"reply": f"Chat error: {e}", "proposed_actions": []}
+
+    assistant_msg = {
+        "role": "assistant",
+        "content": result.get("reply", ""),
+        "proposed_actions": result.get("proposed_actions", []),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    history.append(assistant_msg)
+
+    # Re-read to avoid clobbering concurrent bot writes, then persist chat only
+    s = read_state()
+    s["chat_history"] = history[-200:]
+    write_state(s)
+    return assistant_msg
+
+
+@app.post("/api/chat/confirm")
+def chat_confirm(body: ConfirmBody) -> dict[str, Any]:
+    import chat_engine
+    return chat_engine.apply_action(body.tool, body.args)
+
+
+@app.post("/api/chat/clear")
+def chat_clear() -> dict[str, Any]:
+    s = read_state()
+    s["chat_history"] = []
+    write_state(s)
+    return {"ok": True}
+
+
+@app.get("/api/chat/actions_log")
+def chat_actions_log() -> list[dict[str, Any]]:
+    return read_state().get("ai_actions_log", [])
+
+
+@app.get("/api/nudges")
+def get_nudges() -> list[dict[str, Any]]:
+    return [n for n in read_state().get("ai_nudges", []) if not n.get("dismissed")]
+
+
+class NudgeDismissBody(BaseModel):
+    id: str
+
+
+@app.post("/api/nudges/dismiss")
+def dismiss_nudge(body: NudgeDismissBody) -> dict[str, Any]:
+    s = read_state()
+    for n in s.get("ai_nudges", []):
+        if n.get("id") == body.id:
+            n["dismissed"] = True
+    write_state(s)
+    return {"ok": True}
+
+
 @app.get("/")
 def root() -> dict[str, str]:
     return {"service": "x-bot-api", "status": "ok"}

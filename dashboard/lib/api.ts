@@ -314,6 +314,73 @@ export function getPhrasesToAvoid() {
   return json<string[]>("/api/phrases_to_avoid");
 }
 
+// --- Agentic chat ---
+export interface ProposedAction {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  reason: string;
+  valid: boolean;
+  validation_error: string | null;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  ts: string;
+  proposed_actions?: ProposedAction[];
+}
+
+export function getChatHistory() {
+  return json<ChatMessage[]>("/api/chat/history");
+}
+
+export function sendChat(message: string) {
+  return json<ChatMessage>("/api/chat", {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
+}
+
+export function confirmAction(tool: string, args: Record<string, unknown>) {
+  return json<{ ok: boolean; message: string }>("/api/chat/confirm", {
+    method: "POST",
+    body: JSON.stringify({ tool, args }),
+  });
+}
+
+export function clearChat() {
+  return json<{ ok: boolean }>("/api/chat/clear", { method: "POST" });
+}
+
+export interface AiActionLogItem {
+  tool: string;
+  args: Record<string, unknown>;
+  message: string;
+  applied_at: string;
+}
+export function getActionsLog() {
+  return json<AiActionLogItem[]>("/api/chat/actions_log");
+}
+
+export interface NudgeItem {
+  id: string;
+  key: string;
+  text: string;
+  severity: "info" | "warning" | "critical";
+  created_at: string;
+  dismissed?: boolean;
+}
+export function getNudges() {
+  return json<NudgeItem[]>("/api/nudges");
+}
+export function dismissNudge(id: string) {
+  return json<{ ok: boolean }>("/api/nudges/dismiss", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  });
+}
+
 export function getSettings() {
   return json<BotSettings>("/api/settings");
 }

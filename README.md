@@ -303,6 +303,29 @@ Muted-term filter trips → offending phrase logged to learned avoid-list, injec
 
 </td>
 </tr>
+<tr>
+<td valign="top">
+
+#### ◆ agentic co-pilot
+
+A `/chat` page where a Gemini agent sees the entire bot brain — state, stats, critic decisions, performance — and talks it through with you. Tell it "lean into quotes, reply less" in plain English; it proposes the exact config diff and applies it on your OK. Read-free, every write needs approval.
+
+</td>
+<td valign="top">
+
+#### ◆ proactive nudges
+
+The bot doesn't wait to be asked. It flags problems as dismissable cards: zero-reply streaks, blacklisted VIPs, daily-ceiling hits, error spikes. One click turns any nudge into a conversation with the co-pilot.
+
+</td>
+<td valign="top">
+
+#### ◆ AI action audit trail
+
+Every change the co-pilot applies — knob tweaks, VIP edits, avoid-phrases, bot control — is logged with timestamp and reasoning. Full accountability for an agent touching a live account.
+
+</td>
+</tr>
 </table>
 
 <br />
@@ -447,7 +470,7 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
 
 <div align="center">
 
-<sub>Five pages. Dark theme. Lavender accents. Glassmorphism.</sub>
+<sub>Eight pages. Dark theme. Lavender accents. Glassmorphism.</sub>
 
 </div>
 
@@ -455,12 +478,13 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
 
 | page  | what it shows |
 |:------|:---|
-| `/`              | status, control buttons (start / pause / stop / **reset cycle**), countdown, stat row, recent activity. Banners for: account-health critical/warning, adaptive backoff active, cookie refresh, LLM-tier exhaustion |
+| `/`              | status, control buttons (start / pause / stop / **reset cycle**), countdown, stat row, **daily action budget bar**, recent activity. Banners for: account-health critical/warning, adaptive backoff active, cookie refresh, LLM-tier exhaustion |
+| `/chat`          | **agentic co-pilot** — chat with a Gemini agent that sees the whole bot brain, explains its decisions, surfaces proactive nudges, and proposes config changes you approve inline |
 | `/memory`        | live trending terms, current strategy, queued tweet angles, GitHub repos on radar, **creator intel**, **pre-flight critic log** |
 | `/queue`         | **off-hours drafts pending your approval** — approve / edit / reject before they post |
 | `/analytics`     | daily activity stacked bars, hourly heatmap, your top-performing tweets, **optimal posting hours** (auto-detected) |
 | `/logs`          | Server-Sent Events stream of `x_bot.log` with colored levels |
-| `/history`       | tweets · replies · **quotes** · **follow-ups** · follows tabs |
+| `/history`       | tweets · replies · **quotes** · **reposts** · **follow-ups** · follows tabs |
 | `/settings`      | **3-tier LLM cascade picker** (per-tier model + API key status), cycle limits, full prompt templates |
 
 <br />
@@ -776,6 +800,9 @@ X blocks Playwright's bundled Chromium. The code uses `channel="chrome"` which l
    [x]   topic-ID tagging at generation (one explicit topic per tweet for routing)
    [x]   daily action ceiling (UTC-midnight reset, dashboard progress bar)
    [x]   muted-term feedback loop (learned avoid-list injected into next prompt)
+   [x]   agentic co-pilot chat (Gemini-powered, sees full state, proposes changes you approve)
+   [x]   proactive nudges (bot flags zero-reply streaks, blacklists, ceiling hits, error spikes)
+   [x]   AI action audit trail (every change the co-pilot applies is logged)
    [ ]   real-time engagement tracking per tweet (impressions over time)
    [ ]   multi-account orchestration
    [ ]   DSPy-compiled critic/analyzer prompts

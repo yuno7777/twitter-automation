@@ -1750,132 +1750,101 @@ def _record_follower_snapshot(state: dict[str, Any], count: int) -> None:
 
 X_ANALYTICS_URL = os.getenv("X_ANALYTICS_URL", "https://x.com/i/account_analytics")
 
-# Metric labels as they appear on x.com/i/account_analytics → our state keys
-_ANALYTICS_LABELS = {
-    "impressions": "impressions",
-    "engagement rate": "engagement_rate",
-    "engagements": "engagements",
-    "profile visits": "profile_visits",
-    "replies": "replies",
-    "likes": "likes",
-    "reposts": "reposts",
-    "bookmarks": "bookmarks",
-    "shares": "shares",
-    "verified followers": "verified_followers",
-    "new follows": "new_follows",
-    "follows": "follows",
-    "unfollows": "unfollows",
-    "video views": "video_views",
-    "media views": "media_views",
-}
-_VALUE_RE = re.compile(r"^[\d,]+(?:\.\d+)?\s*[KMB]?%?$")
-_DELTA_RE = re.compile(r"^[↑↓▲▼+\-]?\s*[\d,]+(?:\.\d+)?\s*[KMB]?%?$")
+_ANALYTICS_VISION_PROMPT = (
+    "This is a screenshot of an X (Twitter) account analytics page. Extract the "
+    "metric cards (near the bottom) as STRICT JSON — no markdown, no prose. "
+    "For each metric give 'value' exactly as shown (e.g. \"7.2K\", \"0.8%\", \"111\") "
+    "and 'delta' (the up/down percentage shown beside it, e.g. \"-72%\", \"+118%\", "
+    "or null if none). Keys to use: impressions, engagement_rate, engagements, "
+    "profile_visits, verified_followers, replies, likes, reposts, bookmarks, shares. "
+    "For verified_followers also include 'total' (the number after the slash, e.g. 181). "
+    "Also include a top-level 'range' = the highlighted time range tab (one of "
+    "7D, 2W, 4W, 3M, 1Y). If a card isn't visible, omit it. "
+    'Shape: {"range":"7D","impressions":{"value":"7.2K","delta":"-72%"}, ...}'
+)
 
 
-def _parse_analytics_metrics(text: str) -> dict[str, Any]:
-    """Parse the analytics overview text. Cards render as label → value → delta
-    on consecutive lines, e.g. 'Impressions' / '10.4K' / '↑3K%'."""
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    # Drop the left-nav / app chrome — only parse the analytics content region,
-    # which begins at the "Account overview" header. This avoids matching nav
-    # items like "Bookmarks" as if they were metric cards.
-    # The metric CARDS live at the bottom, starting at "Verified followers".
-    # Everything above is nav + three charts (whose axis numbers/dates would
-    # otherwise be mis-parsed as metric values). Scope to the cards section.
-    lower = [ln.lower() for ln in lines]
-    start = 0
-    for marker in ("verified followers", "account overview"):
-        if marker in lower:
-            start = lower.index(marker)
-            break
-    if start:
-        lines = lines[start:]
-    out: dict[str, Any] = {}
-    n = len(lines)
-    for i, line in enumerate(lines):
-        key = _ANALYTICS_LABELS.get(line.lower())
-        if not key or key in out:
-            continue
-        value = delta = total = None
-        for j in range(i + 1, min(i + 3, n)):
-            cand = lines[j].replace(" ", "")
-            # "60 / 109" form (verified followers etc.) — value / total on one line
-            slash = re.match(r"^([\d,]+)/([\d,]+)$", cand)
-            if slash:
-                value, total = slash.group(1), slash.group(2)
-                break
-            if _VALUE_RE.match(cand):
-                value = lines[j]
-                if j + 1 < n:
-                    nxt = lines[j + 1].replace(" ", "")
-                    if ("↑" in nxt or "↓" in nxt or "%" in nxt) and _DELTA_RE.match(nxt):
-                        delta = lines[j + 1]
-                break
-        if value:
-            entry: dict[str, Any] = {"value": value, "delta": delta}
-            # verified followers may also render value and "/ total" on split lines
-            if total is None and key == "verified_followers":
-                for j in range(i + 1, min(i + 5, n)):
-                    mm = re.search(r"/\s*([\d,]+)", lines[j])
-                    if mm:
-                        total = mm.group(1)
-                        break
-            if total:
-                entry["total"] = total
-            out[key] = entry
-    return out
+async def _gemini_vision_json(prompt: str, image_bytes: bytes) -> dict[str, Any] | None:
+    """Single Gemini vision call returning parsed JSON. Used to read the analytics
+    screenshot — robust to however X encodes the numbers (svg/canvas/lazy)."""
+    if not GEMINI_API_KEY:
+        return None
+    _configure_gemini()
+    import google.generativeai as genai
+    model = genai.GenerativeModel(GEMINI_MODEL)
+    try:
+        result = await asyncio.to_thread(
+            model.generate_content, [prompt, {"mime_type": "image/png", "data": image_bytes}]
+        )
+        return intelligence._extract_json(result.text or "")
+    except Exception as e:
+        logger.warning(f"Gemini vision call failed: {e}")
+        return None
 
 
 async def scrape_account_analytics(page: Page, state: dict[str, Any]) -> None:
-    """Visit x.com/i/account_analytics and scrape the overview metric cards.
-    Reuses the bot's authenticated session — no paid API needed. Non-fatal."""
+    """Open x.com/i/account_analytics, screenshot it, and read the metric cards
+    with Gemini vision. X renders those numbers as SVG/canvas that text-scraping
+    can't reliably extract, so we read the rendered pixels instead — same numbers
+    you see. Reuses the bot's authenticated session; no paid X API. Non-fatal."""
     try:
         await page.goto(X_ANALYTICS_URL, wait_until="commit", timeout=30000)
     except Exception as e:
         logger.warning(f"Analytics page nav failed: {e}")
         return
-    # The metric CARDS are at the bottom and lazy-load their values when scrolled
-    # into view. Scroll to the bottom each pass and poll until the Verified
-    # followers card shows a real number (up to ~30s).
-    text = ""
-    for _ in range(12):
+
+    # Wait for the cards to mount (labels appear in text even though values don't),
+    # scroll them into view, then let the values paint.
+    await jitter(6, 9)
+    rendered = False
+    for _ in range(6):
         try:
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         except Exception:
             pass
         await jitter(2, 3)
         try:
-            text = await page.inner_text("body")
+            body = await page.inner_text("body")
         except Exception:
-            text = ""
-        # Cards loaded once "Verified followers" is immediately followed by a digit,
-        # or we can already parse a few real metrics.
-        if re.search(r"Verified followers\s*\n\s*[\d,]", text) or len(_parse_analytics_metrics(text)) >= 4:
+            body = ""
+        if "errorContainer" in (await page.content() if not body else "") :
+            continue
+        if re.search(r"Impressions", body) and re.search(r"Engagement", body):
+            rendered = True
             break
-
-    if not text:
-        logger.warning("Analytics page produced no text.")
+    if not rendered:
+        logger.warning("Analytics page didn't render the cards (throttled or premium-gated) — keeping prior data.")
         return
 
-    metrics = _parse_analytics_metrics(text)
-    if len(metrics) < 3:
-        logger.warning(
-            f"Analytics scrape parsed only {len(metrics)} metrics — DOM may have changed. "
-            f"Sample(1500): {text[:1500]!r}"
-        )
-    if metrics:
-        # Try to detect the active time range (e.g. 'Last 30 days')
-        range_label = ""
-        m = re.search(r"Last\s+\d+\s+days|Last\s+7\s+days|Last\s+24\s+hours", text)
-        if m:
-            range_label = m.group(0)
-        state["account_analytics"] = {
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "range": range_label,
-            "metrics": metrics,
-        }
-        save_state(state)
-        logger.info(f"Account analytics scraped: {len(metrics)} metrics ({range_label or 'range n/a'}).")
+    await jitter(3, 5)  # let the card values paint
+    try:
+        shot = await page.screenshot(full_page=True)
+    except Exception as e:
+        logger.warning(f"Analytics screenshot failed: {e}")
+        return
+
+    parsed = await _gemini_vision_json(_ANALYTICS_VISION_PROMPT, shot)
+    if not parsed:
+        logger.warning("Analytics vision read returned nothing — keeping prior data.")
+        return
+
+    range_label = parsed.pop("range", "") or ""
+    # Keep only metric entries that have a value
+    metrics = {
+        k: v for k, v in parsed.items()
+        if isinstance(v, dict) and str(v.get("value", "")).strip()
+    }
+    if not metrics:
+        logger.warning("Analytics vision read found no metric values — keeping prior data.")
+        return
+
+    state["account_analytics"] = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "range": range_label,
+        "metrics": metrics,
+    }
+    save_state(state)
+    logger.info(f"Account analytics read via vision: {len(metrics)} metrics ({range_label or 'range n/a'}).")
 
 
 async def scrape_own_top_tweets(page: Page, state: dict[str, Any]) -> None:

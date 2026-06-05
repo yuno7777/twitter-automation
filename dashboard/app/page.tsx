@@ -30,13 +30,13 @@ function Countdown({ to }: { to: string | null | undefined }) {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
-  if (!to) return <span className="mono text-muted">—</span>;
+  if (!to) return <span className="num text-2xl text-muted">—</span>;
   const diff = Math.max(0, Math.floor((new Date(to).getTime() - now) / 1000));
   const h = Math.floor(diff / 3600);
   const m = Math.floor((diff % 3600) / 60);
   const s = diff % 60;
   return (
-    <span className="mono text-2xl text-lavender">
+    <span className="num text-3xl font-semibold tracking-tight text-lavender">
       {String(h).padStart(2, "0")}:{String(m).padStart(2, "0")}:{String(s).padStart(2, "0")}
     </span>
   );
@@ -44,12 +44,14 @@ function Countdown({ to }: { to: string | null | undefined }) {
 
 function StatCard({ icon: Icon, label, value }: { icon: any; label: string; value: number | string }) {
   return (
-    <div className="glass p-5">
+    <div className="glass p-5 transition-transform hover:-translate-y-0.5">
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted">{label}</div>
-        <Icon size={16} className="text-lavender" />
+        <div className="w-8 h-8 rounded-xl bg-lavender-soft flex items-center justify-center">
+          <Icon size={15} className="text-lavender" />
+        </div>
       </div>
-      <div className="mt-2 text-3xl font-semibold mono">{value}</div>
+      <div className="mt-3 text-[2rem] leading-none font-semibold tracking-tight num">{value}</div>
     </div>
   );
 }
@@ -105,28 +107,33 @@ export default function OverviewPage() {
         <p className="text-muted text-sm">Real-time view of your Twitter Growth System.</p>
       </header>
 
-      {/* Daily action budget — shows how much of MAX_DAILY_ACTIONS we've used */}
+      {/* Daily action budget — the one hero accent card on this screen */}
       {budget && (
-        <div className="glass p-4 flex items-center gap-4">
-          <div className="flex-1">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted">Daily action budget</span>
-              <span className="mono">
-                {budget.used} / {budget.limit}
-                {budget.used >= budget.limit && (
-                  <span className="ml-2 text-rose-300">— ceiling hit, engagement paused</span>
-                )}
+        <div className="glass-accent p-5">
+          <div className="flex items-end justify-between mb-3">
+            <div>
+              <div className="text-sm text-muted">Daily action budget</div>
+              <div className="num text-2xl font-semibold tracking-tight mt-1">
+                {budget.used}
+                <span className="text-muted text-lg"> / {budget.limit}</span>
+              </div>
+            </div>
+            {budget.used >= budget.limit ? (
+              <span className="pill text-xs px-3 py-1 bg-rose-500/15 text-rose-300 border border-rose-500/30">
+                ceiling hit — paused
               </span>
-            </div>
-            <div className="mt-2 h-1.5 rounded-full bg-white/5 overflow-hidden">
-              <div
-                className={cn(
-                  "h-full transition-all",
-                  budgetPct >= 90 ? "bg-rose-400" : budgetPct >= 70 ? "bg-amber-400" : "bg-lavender"
-                )}
-                style={{ width: `${budgetPct}%` }}
-              />
-            </div>
+            ) : (
+              <span className="num text-sm text-muted">{budgetPct}% used</span>
+            )}
+          </div>
+          <div className="h-2 rounded-full bg-black/30 overflow-hidden">
+            <div
+              className={cn(
+                "h-full rounded-full transition-all duration-500",
+                budgetPct >= 90 ? "bg-rose-400" : budgetPct >= 70 ? "bg-amber-400" : "bg-gradient-to-r from-lavender to-lavender-deep"
+              )}
+              style={{ width: `${budgetPct}%` }}
+            />
           </div>
         </div>
       )}
@@ -237,37 +244,43 @@ export default function OverviewPage() {
         <div className="flex flex-col gap-3">
           <span
             className={cn(
-              "inline-flex items-center self-start px-3 py-1 rounded-full border text-xs uppercase tracking-widest font-medium",
+              "inline-flex items-center gap-2 self-start pill px-3 py-1 border text-xs font-medium capitalize",
               statusStyle[s]
             )}
           >
+            <span className={cn(
+              "w-1.5 h-1.5 rounded-full",
+              s === "running" && "bg-emerald-400",
+              s === "paused" && "bg-amber-400",
+              s === "stopped" && "bg-rose-400",
+            )} />
             {s}
           </span>
-          <div className="text-lg font-medium">{status?.current_action || "idle"}</div>
-          <div className="text-xs text-muted">Last run: {timeAgo(status?.last_run)}</div>
+          <div className="text-xl font-medium tracking-tight">{status?.current_action || "idle"}</div>
+          <div className="text-xs text-muted">Last run {timeAgo(status?.last_run)}</div>
         </div>
         <div className="text-right">
-          <div className="text-xs text-muted uppercase tracking-widest">Next cycle in</div>
+          <div className="text-xs text-muted mb-1">Next cycle in</div>
           <Countdown to={status?.next_cycle_at} />
         </div>
       </section>
 
-      <section className="flex gap-3 flex-wrap">
+      <section className="flex gap-2.5 flex-wrap">
         <button
           onClick={() => handleControl(s === "paused" ? "resume" : "start")}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-lavender text-black font-medium hover:bg-lavender/90 transition"
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-lavender text-black font-medium hover:bg-lavender-deep hover:text-white transition-colors"
         >
           <Play size={16} /> {s === "paused" ? "Resume" : "Start"}
         </button>
         <button
           onClick={() => handleControl("pause")}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-border hover:bg-white/5 transition"
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-border hover:bg-white/5 transition"
         >
           <Pause size={16} /> Pause
         </button>
         <button
           onClick={() => handleControl("stop")}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 transition"
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 transition"
         >
           <Square size={16} /> Stop
         </button>
@@ -277,7 +290,7 @@ export default function OverviewPage() {
               handleControl("reset_cycle");
             }
           }}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-lavender/40 text-lavender hover:bg-lavender/10 transition ml-auto"
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-lavender/40 text-lavender hover:bg-lavender/10 transition ml-auto"
           title="Skip the rest of the current wait/cycle and trigger a fresh cycle immediately"
         >
           <RotateCcw size={16} /> Reset Cycle
@@ -302,7 +315,7 @@ export default function OverviewPage() {
               <li key={i} className="py-3 flex gap-4 items-start">
                 <span
                   className={cn(
-                    "text-[10px] uppercase tracking-widest px-2 py-1 rounded shrink-0 mt-0.5",
+                    "text-[11px] capitalize px-2.5 py-1 pill shrink-0 mt-0.5 font-medium",
                     a.type === "tweet" && "bg-lavender/15 text-lavender",
                     a.type === "reply" && "bg-emerald-500/15 text-emerald-300",
                     a.type === "follow" && "bg-amber-500/15 text-amber-300"
@@ -311,7 +324,7 @@ export default function OverviewPage() {
                   {a.type}
                 </span>
                 <p className="text-sm flex-1 line-clamp-2">{a.text}</p>
-                <span className="text-xs text-muted shrink-0 mono">{timeAgo(a.ts)}</span>
+                <span className="text-xs text-muted shrink-0 num">{timeAgo(a.ts)}</span>
               </li>
             ))}
           </ul>

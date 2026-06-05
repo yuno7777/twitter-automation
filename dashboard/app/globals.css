@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap");
 
 @tailwind base;
 @tailwind components;
@@ -9,30 +9,70 @@
 }
 
 html, body {
-  background: #000;
-  color: #e9e9ee;
-  font-family: Helvetica, "Helvetica Neue", Arial, system-ui, sans-serif;
+  /* Soft charcoal with a faint radial lift — premium dark, not pure black */
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(124,58,237,0.08), transparent 60%),
+    radial-gradient(900px 500px at 0% 110%, rgba(124,58,237,0.05), transparent 55%),
+    #0A0A0F;
+  background-attachment: fixed;
+  color: #ECECF1;
+  font-family: "Geist", Helvetica, Arial, system-ui, sans-serif;
+  font-feature-settings: "cv01", "ss01";
+  -webkit-font-smoothing: antialiased;
   min-height: 100vh;
 }
 
+/* Layered frosted card — lifts off the bg with depth + a soft inner highlight */
 .glass {
-  background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
-  border: 1px solid rgba(255,255,255,0.08);
+  background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.022));
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 20px;
+  backdrop-filter: blur(14px);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.06) inset,
+    0 10px 30px rgba(0,0,0,0.35);
+}
+
+/* Nested item inside a card (one layer up in the stack) */
+.surface {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.06);
   border-radius: 14px;
-  backdrop-filter: blur(12px);
-  box-shadow: 0 1px 0 rgba(255,255,255,0.05) inset, 0 8px 24px rgba(124,58,237,0.05);
+}
+
+/* Hero accent card — the one focal element per screen */
+.glass-accent {
+  background:
+    linear-gradient(160deg, rgba(167,139,250,0.20), rgba(124,58,237,0.06) 55%, rgba(255,255,255,0.02));
+  border: 1px solid rgba(167,139,250,0.30);
+  border-radius: 20px;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.08) inset,
+    0 16px 44px rgba(124,58,237,0.18);
+}
+
+/* Pill — rounded-full segmented control / badge base */
+.pill {
+  border-radius: 9999px;
+}
+
+/* Tabular sans numerals — warm replacement for techy mono on data */
+.num {
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
 }
 
 .mono {
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.25); border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(167,139,250,0.45); }
+::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.22); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(167,139,250,0.4); }
 
 .lavender-glow {
-  box-shadow: 0 0 0 1px rgba(167,139,250,0.25), 0 0 40px rgba(124,58,237,0.15);
+  box-shadow: 0 0 0 1px rgba(167,139,250,0.25), 0 0 40px rgba(124,58,237,0.18);
 }

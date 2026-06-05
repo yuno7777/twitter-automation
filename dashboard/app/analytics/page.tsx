@@ -157,7 +157,7 @@ export default function AnalyticsPage() {
               <p className="text-xs text-muted">Total actions per day</p>
             </div>
             <div className="text-right">
-              <div className="text-2xl font-semibold mono text-lavender">{totalActions}</div>
+              <div className="text-2xl font-semibold num text-lavender">{totalActions}</div>
               <div className="text-[10px] text-muted uppercase tracking-widest">total actions</div>
             </div>
           </div>
@@ -241,7 +241,7 @@ export default function AnalyticsPage() {
                   </PieChart>
                 </ResponsiveContainer>
                 <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                  <div className="text-2xl font-semibold mono">{totalActions}</div>
+                  <div className="text-2xl font-semibold num">{totalActions}</div>
                   <div className="text-[10px] text-muted uppercase tracking-widest">actions</div>
                 </div>
               </>
@@ -252,7 +252,7 @@ export default function AnalyticsPage() {
               <div key={c.name} className="flex items-center gap-2 text-xs">
                 <span className="w-2.5 h-2.5 rounded-sm" style={{ background: c.fill }} />
                 <span className="text-muted">{c.name}</span>
-                <span className="ml-auto mono">{c.value}</span>
+                <span className="ml-auto num">{c.value}</span>
               </div>
             ))}
           </div>
@@ -275,7 +275,7 @@ export default function AnalyticsPage() {
               </RadialBarChart>
             </ResponsiveContainer>
             <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-              <div className="text-4xl font-bold mono text-lavender">{replyRate}%</div>
+              <div className="text-4xl font-bold num text-lavender">{replyRate}%</div>
               <div className="text-[11px] text-muted mt-1">{window_totals.replies} replies</div>
             </div>
           </div>
@@ -290,7 +290,7 @@ export default function AnalyticsPage() {
             <MiniStat label="Follows" value={(window_totals.follows / days).toFixed(1)} color={COLORS.amber} />
             <div className="border-t border-border pt-3 flex items-center justify-between">
               <span className="text-xs text-muted">Cycles run</span>
-              <span className="mono font-semibold">{cycles_run}</span>
+              <span className="num font-semibold">{cycles_run}</span>
             </div>
           </div>
         </div>
@@ -356,7 +356,7 @@ export default function AnalyticsPage() {
             {top_tweets.map((t, i) => (
               <li key={i} className="flex items-start gap-4 border-b border-border last:border-0 pb-3 last:pb-0">
                 <div className="shrink-0 w-14 text-center">
-                  <div className="text-lavender text-2xl font-semibold mono flex items-center justify-center gap-1">
+                  <div className="text-lavender text-2xl font-semibold num flex items-center justify-center gap-1">
                     <Heart size={14} className="text-rose-300" /> {t.likes}
                   </div>
                 </div>
@@ -410,7 +410,7 @@ function KpiCard({
         </div>
       </div>
       <div className="mt-2 flex items-end gap-2">
-        <div className="text-3xl font-semibold mono">{value}</div>
+        <div className="text-3xl font-semibold num">{value}</div>
         {delta !== null && (
           <div
             className={cn(
@@ -435,7 +435,7 @@ function MiniStat({ label, value, color }: { label: string; value: string; color
         <span className="w-2 h-2 rounded-full" style={{ background: color }} />
         <span className="text-xs text-muted">{label}</span>
       </div>
-      <span className="mono text-sm font-medium">{value}</span>
+      <span className="num text-sm font-medium">{value}</span>
     </div>
   );
 }
@@ -447,7 +447,7 @@ function LifetimeStat({ icon: Icon, label, value }: { icon: any; label: string; 
         <Icon size={16} className="text-lavender" />
       </div>
       <div>
-        <div className="text-xl font-semibold mono leading-tight">{value}</div>
+        <div className="text-xl font-semibold num leading-tight">{value}</div>
         <div className="text-[11px] text-muted uppercase tracking-widest">{label}</div>
       </div>
     </div>

@@ -257,10 +257,10 @@ export default function ChatPage() {
         <header className="flex items-center justify-between shrink-0 mb-3">
           <div>
             <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-              <Sparkles size={22} className="text-lavender" /> Co-Pilot
+              <Sparkles size={22} className="text-lavender" /> Friday
             </h1>
             <p className="text-muted text-xs">
-              Sees the whole bot · remembers across chats · proposes changes you approve
+              Your growth co-pilot · sees the whole bot · remembers you across chats
             </p>
           </div>
           <button
@@ -296,8 +296,9 @@ export default function ChatPage() {
                 <Sparkles size={26} className="text-black" />
               </div>
               <p className="text-muted text-sm max-w-sm">
-                Ask about performance, attach an analytics screenshot, or request
-                changes in plain English. Every change needs your approval.
+                Hey, I'm Friday. Ask me how the bot's doing, drop an analytics
+                screenshot, or just tell me what to change. I'll line it up — you
+                tap Apply.
               </p>
               <div className="flex flex-wrap gap-2 justify-center max-w-lg">
                 {SUGGESTIONS.map((s) => (

@@ -142,6 +142,38 @@ def _load_vip_handles() -> list[str]:
 VIP_HANDLES = _load_vip_handles()
 
 
+def reload_runtime_config() -> None:
+    """Re-read .env + vip_handles.txt into the live module constants.
+
+    The tuning knobs and VIP list are read once at import; without this, changes
+    the dashboard co-pilot makes (set_knob -> .env, add_vip -> vip_handles.txt)
+    would never reach the running bot until a full restart. We call this at the
+    top of every cycle so approved changes take effect on the next cycle (or
+    immediately if you hit Reset Cycle)."""
+    global MAX_POSTS_PER_CYCLE, MAX_REPLIES_PER_CYCLE, MAX_FOLLOWS_PER_CYCLE
+    global MAX_LIKES_PER_CYCLE, MAX_QUOTES_PER_CYCLE, MAX_REPOSTS_PER_CYCLE
+    global MAX_FOLLOW_UPS_PER_CYCLE, MAX_ACTIONS_PER_VIP_PER_CYCLE
+    global MAX_ACTIONS_PER_VIP_PER_DAY, MAX_DAILY_ACTIONS
+    global VIP_REPLY_RATIO, VIP_MAX_AGE_MIN, NICHE, VIP_HANDLES
+
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
+
+    MAX_POSTS_PER_CYCLE = int(os.getenv("MAX_POSTS_PER_CYCLE", "1"))
+    MAX_REPLIES_PER_CYCLE = int(os.getenv("MAX_REPLIES_PER_CYCLE", "6"))
+    MAX_FOLLOWS_PER_CYCLE = int(os.getenv("MAX_FOLLOWS_PER_CYCLE", "2"))
+    MAX_LIKES_PER_CYCLE = int(os.getenv("MAX_LIKES_PER_CYCLE", "10"))
+    MAX_QUOTES_PER_CYCLE = int(os.getenv("MAX_QUOTES_PER_CYCLE", "4"))
+    MAX_REPOSTS_PER_CYCLE = int(os.getenv("MAX_REPOSTS_PER_CYCLE", "4"))
+    MAX_FOLLOW_UPS_PER_CYCLE = int(os.getenv("MAX_FOLLOW_UPS_PER_CYCLE", "2"))
+    MAX_ACTIONS_PER_VIP_PER_CYCLE = int(os.getenv("MAX_ACTIONS_PER_VIP_PER_CYCLE", "1"))
+    MAX_ACTIONS_PER_VIP_PER_DAY = int(os.getenv("MAX_ACTIONS_PER_VIP_PER_DAY", "3"))
+    MAX_DAILY_ACTIONS = int(os.getenv("MAX_DAILY_ACTIONS", "200"))
+    VIP_REPLY_RATIO = float(os.getenv("VIP_REPLY_RATIO", "0.7"))
+    VIP_MAX_AGE_MIN = int(os.getenv("VIP_MAX_AGE_MIN", "120"))
+    NICHE = os.getenv("NICHE", "AI, automation, and tech").strip()
+    VIP_HANDLES = _load_vip_handles()
+
+
 def _handle_from_tweet_url(url: str) -> str | None:
     """Extract @handle from a tweet URL like https://x.com/handle/status/12345."""
     try:
@@ -3465,6 +3497,13 @@ async def main_loop() -> None:
         if state.get("status") == "stopped":
             logger.info("Status is 'stopped' — exiting main loop.")
             break
+
+        # Pick up any knob/VIP changes the dashboard co-pilot applied since the
+        # last cycle (set_knob -> .env, add_vip -> vip_handles.txt).
+        try:
+            reload_runtime_config()
+        except Exception as e:
+            logger.warning(f"Config reload failed (using previous values): {e}")
 
         try:
             await run_cycle(state)

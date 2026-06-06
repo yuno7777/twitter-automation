@@ -110,7 +110,7 @@ MAX_FOLLOW_UPS_PER_CYCLE = int(os.getenv("MAX_FOLLOW_UPS_PER_CYCLE", "2"))
 # Fraction of replies that should target the VIP list. Rest go to broad search.
 VIP_REPLY_RATIO = float(os.getenv("VIP_REPLY_RATIO", "0.7"))
 # Max tweet age (minutes) when scanning VIP timelines for fresh hot tweets.
-VIP_MAX_AGE_MIN = int(os.getenv("VIP_MAX_AGE_MIN", "120"))
+VIP_MAX_AGE_MIN = int(os.getenv("VIP_MAX_AGE_MIN", "240"))
 
 NICHE = os.getenv("NICHE", "AI, automation, and tech").strip()
 X_HANDLE = os.getenv("X_HANDLE", "").strip().lstrip("@")
@@ -169,7 +169,7 @@ def reload_runtime_config() -> None:
     MAX_ACTIONS_PER_VIP_PER_DAY = int(os.getenv("MAX_ACTIONS_PER_VIP_PER_DAY", "3"))
     MAX_DAILY_ACTIONS = int(os.getenv("MAX_DAILY_ACTIONS", "200"))
     VIP_REPLY_RATIO = float(os.getenv("VIP_REPLY_RATIO", "0.7"))
-    VIP_MAX_AGE_MIN = int(os.getenv("VIP_MAX_AGE_MIN", "120"))
+    VIP_MAX_AGE_MIN = int(os.getenv("VIP_MAX_AGE_MIN", "240"))
     NICHE = os.getenv("NICHE", "AI, automation, and tech").strip()
     VIP_HANDLES = _load_vip_handles()
 
@@ -206,7 +206,7 @@ def _record_vip_action(state: dict[str, Any], handle: str) -> None:
 
 
 def _record_vip_load_failure(state: dict[str, Any], handle: str) -> None:
-    """Track per-handle load failures. After 3 in 24h, treat as blacklisted."""
+    """Track per-handle load failures. After 2 in 48h, treat as blacklisted."""
     state.setdefault("vip_load_failures", {})
     log = state["vip_load_failures"].setdefault(handle.lower(), [])
     log.insert(0, datetime.now(timezone.utc).isoformat())
@@ -214,11 +214,13 @@ def _record_vip_load_failure(state: dict[str, Any], handle: str) -> None:
 
 
 def _vip_blacklisted(state: dict[str, Any], handle: str) -> bool:
-    """True if this VIP has failed to load 3+ times in the last 24h."""
+    """True if this VIP has failed to load 2+ times in the last 48h.
+    (Lowered from 3/24h — with random sampling of a 50+ list, a dead handle is
+    only sampled a couple times a day, so the stricter threshold rarely tripped.)"""
     log = (state.get("vip_load_failures") or {}).get(handle.lower(), [])
     if not log:
         return False
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     recent_failures = 0
     for ts in log:
         try:
@@ -226,7 +228,7 @@ def _vip_blacklisted(state: dict[str, Any], handle: str) -> bool:
                 recent_failures += 1
         except Exception:
             continue
-    return recent_failures >= 3
+    return recent_failures >= 2
 
 
 def _vip_allowed(state: dict[str, Any], handle: str | None, this_cycle: set[str]) -> bool:
@@ -2190,11 +2192,11 @@ async def discover_vip_recent_tweets(
     """Scrape a VIP's profile timeline for fresh tweets (under max_age_min)."""
     url = f"https://x.com/{handle}"
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await jitter(3, 6)
-        await page.wait_for_selector(SELECTORS["tweet_card"], timeout=15000)
+        await page.goto(url, wait_until="commit", timeout=20000)
+        await jitter(2, 4)
+        await page.wait_for_selector(SELECTORS["tweet_card"], timeout=10000)
     except Exception as e:
-        logger.warning(f"VIP timeline @{handle} did not load: {e}")
+        logger.warning(f"VIP timeline @{handle} did not load: {str(e)[:80]}")
         if state is not None:
             _record_vip_load_failure(state, handle)
         return []
@@ -2271,9 +2273,9 @@ async def gather_vip_candidates(
         if blacklisted_now:
             logger.info(
                 f"VIP blacklist active: skipping {len(blacklisted_now)} handle(s) "
-                f"(3+ load failures in 24h): {', '.join('@' + h for h in blacklisted_now[:5])}"
+                f"(2+ load failures in 48h): {', '.join('@' + h for h in blacklisted_now[:5])}"
             )
-    target_size = min(8, len(handles))
+    target_size = min(10, len(handles))
     sample: list[str] = []
     # Fill up to half the sample with warm engagers that overlap our VIP list
     if warm_engagers:
@@ -2297,15 +2299,27 @@ async def gather_vip_candidates(
         remaining_ordered = remaining
     sample.extend(remaining_ordered[: target_size - len(sample)])
     pool: list[TweetCandidate] = []
+    loaded = failed = with_fresh = 0
     for h in sample:
         try:
             cands = await discover_vip_recent_tweets(page, h, state=state)
-            for c in cands[:cap_per_handle]:
-                # tag the handle inside the url field for downstream logging
-                pool.append(c)
+            if cands:
+                loaded += 1
+                with_fresh += 1
+                for c in cands[:cap_per_handle]:
+                    pool.append(c)
+            else:
+                # discover already records load failures; here it loaded but had
+                # no fresh tweet (or genuinely failed — both yield []).
+                loaded += 1
             await jitter(1.5, 3.0)  # gentle pacing between profile loads
         except Exception as e:
+            failed += 1
             logger.debug(f"VIP gather @{h} failed: {e}")
+    logger.info(
+        f"VIP scan: sampled {len(sample)}, {with_fresh} had fresh (<{VIP_MAX_AGE_MIN}min) tweets, "
+        f"pool={len(pool)} candidates."
+    )
     return pool
 
 
@@ -3082,7 +3096,7 @@ async def run_cycle(state: dict[str, Any]) -> None:
             vip_pool: list[tuple[TweetCandidate, bool]] = []  # (candidate, is_vip)
             vip_actions_this_cycle: set[str] = set()  # handles we've acted on this cycle
             if MAX_REPLIES_PER_CYCLE > 0 and VIP_HANDLES and VIP_REPLY_RATIO > 0:
-                set_action(state, f"Scanning {min(6, len(VIP_HANDLES))} VIP timelines for fresh tweets")
+                set_action(state, f"Scanning {min(10, len(VIP_HANDLES))} VIP timelines for fresh tweets")
                 warm = [w["handle"] for w in (state.get("warm_engagers") or [])]
                 vip_cands = await gather_vip_candidates(page, VIP_HANDLES, warm_engagers=warm, state=state)
                 vip_cands = [c for c in vip_cands if c.url not in state.get("replied_tweet_ids", [])]

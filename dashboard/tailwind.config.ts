@@ -5,8 +5,8 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Soft charcoal foundation — not pure black (premium dark trend)
-        bg: "#0A0A0F",
+        // Pure pitch black background
+        bg: "#000000",
         surface: "#15161D",
         surface2: "#1C1E27",
         panel: "rgba(255,255,255,0.04)",

@@ -9,12 +9,8 @@
 }
 
 html, body {
-  /* Soft charcoal with a faint radial lift — premium dark, not pure black */
-  background:
-    radial-gradient(1200px 600px at 80% -10%, rgba(124,58,237,0.08), transparent 60%),
-    radial-gradient(900px 500px at 0% 110%, rgba(124,58,237,0.05), transparent 55%),
-    #0A0A0F;
-  background-attachment: fixed;
+  /* Pure pitch black — no gradient */
+  background: #000000;
   color: #ECECF1;
   font-family: "Geist", Helvetica, Arial, system-ui, sans-serif;
   font-feature-settings: "cv01", "ss01";

@@ -15,7 +15,8 @@
 <br />
 
 ![Python](https://img.shields.io/badge/python-3.11+-000000?style=flat-square&logo=python&logoColor=white&labelColor=000)
-![Next.js](https://img.shields.io/badge/next.js-14-000000?style=flat-square&logo=next.js&logoColor=white&labelColor=000)
+![Next.js](https://img.shields.io/badge/next.js-16-000000?style=flat-square&logo=next.js&logoColor=white&labelColor=000)
+![React](https://img.shields.io/badge/react-19-000000?style=flat-square&logo=react&logoColor=white&labelColor=000)
 ![FastAPI](https://img.shields.io/badge/fastapi-0.115-000000?style=flat-square&logo=fastapi&logoColor=white&labelColor=000)
 ![Playwright](https://img.shields.io/badge/playwright-1.49-000000?style=flat-square&logo=playwright&logoColor=white&labelColor=000)
 ![TypeScript](https://img.shields.io/badge/typescript-5-000000?style=flat-square&logo=typescript&logoColor=white&labelColor=000)
@@ -137,17 +138,20 @@ or logs/dashboard.log and propose a fix before continuing.
    ▸  writes        →   1–3 tweet thread in your voice, grounded in real source URLs
    ▸  attaches      →   pulls og:image from the article/repo and posts it with the thread
    ▸  critiques     →   every draft scored 1–10 (hook · voice · value · grounding) before posting
-   ▸  engages       →   5 thoughtful replies, LLM-filtered (no spam/ragebait/off-topic)
-   ▸  quotes        →   1 viral post per cycle with a sharper take
+   ▸  targets       →   VIP-first: 70% of replies aim at fresh tweets from 50 top AI/tech accounts
+   ▸  engages       →   ~6 thoughtful replies, LLM-filtered (no spam/ragebait/off-topic)
+   ▸  quotes        →   up to 4 sharper-take quote-tweets (the highest-leverage lever)
+   ▸  reposts       →   up to 4 VIP reposts, niche-gated, 30-min freshness window
    ▸  follows up    →   continues conversations on your own tweets (sentiment-checked)
    ▸  likes         →   10 niche tweets to warm the algo signal
    ▸  follows       →   1–2 high-quality accounts — biased toward followers-of-creators-you-admire
    ▸  drafts        →   off-peak hours generate tweets to your approval queue
-   ▸  learns        →   tracks own top + bottom performers, biases toward what works
-   ▸  studies       →   scrapes tracked creators in your niche for live style reference
-   ▸  varies        →   rotates 6 content modes (hook · story · contrarian · listicle · question · comparison)
+   ▸  learns        →   tracks own top + bottom performers + 30-min velocity, biases toward what works
+   ▸  reads         →   scrapes your live X analytics (impressions/engagement/followers) via Gemini vision
+   ▸  varies        →   rotates 8 content modes (hook · story · contrarian · listicle · question · comparison · reply-bait · curiosity-gap)
    ▸  monitors      →   own account health each cycle — auto-pauses if X shows suspension/limit
    ▸  adapts        →   exponential backoff (1x→8x) when X throttles, resets on clean cycle
+   ▸  caps          →   per-VIP diversity caps + a daily action ceiling for account safety
 ```
 
 <br />
@@ -223,7 +227,7 @@ During off-peak hours, the bot drafts tweets to a queue instead of posting blind
 
 #### ◆ 3-tier LLM cascade with rate-limit memory
 
-`gpt-oss-120b` → `llama-3.3-70b` → `gemini-2.5`. **Two Groq API keys** for separate rate budgets per tier. When a model 429s, the bot **records the cooldown** and skips it until it recovers — no wasted requests.
+`gpt-oss-120b` → `llama-3.3-70b` → `gemini-3.1-flash-lite`. **Two Groq API keys** for separate rate budgets per tier. When a model 429s, the bot **records the cooldown** and skips it until it recovers — no wasted requests.
 
 </td>
 <td valign="top">
@@ -344,7 +348,7 @@ flowchart LR
     N[5 AI Newsletters<br/>AINews · Latent Space ...] --> S
     CR[Creator profiles<br/>top tweets scrape] --> S
 
-    S[Strategy Brain<br/>3-tier LLM cascade<br/>gpt-oss-120b → llama-3.3 → gemini-2.5<br/>w/ rate-limit memory] --> Q[Reply / Like / Follow queries<br/>Tweet topics + repos<br/>Trending terms]
+    S[Strategy Brain<br/>3-tier LLM cascade<br/>gpt-oss-120b → llama-3.3 → gemini-3.1-flash-lite<br/>w/ rate-limit memory] --> Q[Reply / Like / Follow queries<br/>Tweet topics + repos<br/>Trending terms]
 
     Q --> CR2[Pre-flight Critic<br/>hook · voice · value · grounding]
     CR2 --> P[Playwright<br/>Real Chrome<br/>Stealth Patches]
@@ -470,7 +474,7 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
 
 <div align="center">
 
-<sub>Eight pages. Dark theme. Lavender accents. Glassmorphism.</sub>
+<sub>Nine pages. Pitch-black theme. Lavender accents. Geist · Glassmorphism. Served as a pre-built production bundle — ~10ms page loads.</sub>
 
 </div>
 
@@ -479,10 +483,11 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
 | page  | what it shows |
 |:------|:---|
 | `/`              | status, control buttons (start / pause / stop / **reset cycle**), countdown, stat row, **daily action budget bar**, recent activity. Banners for: account-health critical/warning, adaptive backoff active, cookie refresh, LLM-tier exhaustion |
-| `/chat`          | **agentic co-pilot** — chat with a Gemini agent that sees the whole bot brain, explains its decisions, surfaces proactive nudges, and proposes config changes you approve inline |
+| `/chat`          | **Friday** — agentic co-pilot. Multi-session (like ChatGPT) with **persistent memory** across chats, a collapsible **thought process**, **vision + PDF** (drop an analytics screenshot and she reads it), proactive nudges, and config changes you approve inline. Approved changes actually reach the bot next cycle |
+| `/insights`      | **live X analytics** scraped from `x.com/i/account_analytics` via Gemini vision — impressions, engagement rate, profile visits, verified followers, replies/likes/reposts/bookmarks/shares with period deltas + a followers-over-time trend |
 | `/memory`        | live trending terms, current strategy, queued tweet angles, GitHub repos on radar, **creator intel**, **pre-flight critic log** |
 | `/queue`         | **off-hours drafts pending your approval** — approve / edit / reject before they post |
-| `/analytics`     | daily activity stacked bars, hourly heatmap, your top-performing tweets, **optimal posting hours** (auto-detected) |
+| `/analytics`     | KPI cards with trend deltas, gradient activity area chart, most-active-day bars, action-mix donut, reply-rate gauge, hourly chart, **optimal posting hours** (auto-detected) |
 | `/logs`          | Server-Sent Events stream of `x_bot.log` with colored levels |
 | `/history`       | tweets · replies · **quotes** · **reposts** · **follow-ups** · follows tabs |
 | `/settings`      | **3-tier LLM cascade picker** (per-tier model + API key status), cycle limits, full prompt templates |
@@ -563,7 +568,7 @@ Double-click **`Start Twit-Auto.vbs`**. In 5–30 seconds, Chrome opens to `http
                               ▼
    ┌── LLM strategy brain ──────────────────────────────────┐
    │   3-tier cascade with rate-limit memory:               │
-   │     gpt-oss-120b → llama-3.3-70b → gemini-2.5-flash    │
+   │     gpt-oss-120b → llama-3.3-70b → gemini-3.1-flash-lite    │
    │   sees:  all signals + memory + trending terms +       │
    │          recent queries + topics covered + repos used  │
    │                                                        │
@@ -687,7 +692,7 @@ twit-auto/
 | `vip_handles.txt`       | *file* | newline-separated VIP list (50 AI/tech accounts pre-loaded) |
 | `GROQ_PRIMARY_MODEL`    | `openai/gpt-oss-120b` | tier 1 of the LLM cascade |
 | `GROQ_FALLBACK_MODEL`   | `llama-3.3-70b-versatile` | tier 2 — used when tier 1 rate-limits |
-| `GEMINI_MODEL`          | `gemini-2.5-flash` | tier 3 — last resort |
+| `GEMINI_MODEL`          | `gemini-3.1-flash-lite` | tier 3 — last resort + vision |
 | `GROQ_PRIMARY_API_KEY`  | falls back to `GROQ_API_KEY` | own rate budget for tier 1 |
 | `GROQ_FALLBACK_API_KEY` | falls back to `GROQ_API_KEY` | own rate budget for tier 2 |
 | `DRY_RUN`               | `false` | log actions without performing them |
@@ -708,11 +713,13 @@ twit-auto/
 | browser automation | Playwright + real Chrome with persistent profile |
 | LLM tier 1 | Groq `openai/gpt-oss-120b` (reasoning + structured JSON) |
 | LLM tier 2 | Groq `llama-3.3-70b-versatile` (rate-limit fallback, own API key) |
-| LLM tier 3 | Google `gemini-2.5-flash` (last resort, different provider) |
+| LLM tier 3 | Google `gemini-3.1-flash-lite` (last resort + **vision**, different provider) |
+| co-pilot | `gemini-3.1-flash-lite` — agentic chat (Friday), isolated from the bot's Groq budget |
 | trend sources | GitHub API · HackerNews · Reddit · 5 AI newsletters · creator profiles |
 | backend | FastAPI · Uvicorn · `json-repair` (3-pass LLM JSON recovery) |
-| frontend | Next.js 14 · Tailwind · Recharts · SWR · Lucide |
-| state | single `bot_state.json` with atomic writes |
+| frontend | Next.js 16 · React 19 · Tailwind · Recharts · SWR · Lucide · Geist |
+| dashboard serving | pre-built production bundle (`next start`) — ~10ms page loads |
+| state | single `bot_state.json` with atomic writes + cross-process merge |
 | eval | `bot/eval_runner.py` against labeled `tweet_eval.jsonl` |
 
 </div>
@@ -800,9 +807,16 @@ X blocks Playwright's bundled Chromium. The code uses `channel="chrome"` which l
    [x]   topic-ID tagging at generation (one explicit topic per tweet for routing)
    [x]   daily action ceiling (UTC-midnight reset, dashboard progress bar)
    [x]   muted-term feedback loop (learned avoid-list injected into next prompt)
-   [x]   agentic co-pilot chat (Gemini-powered, sees full state, proposes changes you approve)
+   [x]   Friday — agentic co-pilot (multi-session, persistent memory, vision+PDF, proposes changes you approve)
    [x]   proactive nudges (bot flags zero-reply streaks, blacklists, ceiling hits, error spikes)
    [x]   AI action audit trail (every change the co-pilot applies is logged)
+   [x]   co-pilot changes actually apply (live .env + VIP reload each cycle, no restart)
+   [x]   live X analytics page — vision-scraped from x.com/i/account_analytics
+   [x]   followers-over-time trend (daily snapshots)
+   [x]   auto-blacklist dead VIP handles (2 load-fails in 48h)
+   [x]   Gemini 3.1 Flash-Lite (cheaper, vision-capable) across cascade + co-pilot
+   [x]   production-build dashboard serving (~5s/page -> ~10ms)
+   [x]   Next.js 16 + React 19 · Geist · pitch-black theme
    [ ]   real-time engagement tracking per tweet (impressions over time)
    [ ]   multi-account orchestration
    [ ]   DSPy-compiled critic/analyzer prompts

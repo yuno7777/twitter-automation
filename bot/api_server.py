@@ -216,6 +216,30 @@ def follower_series() -> list[dict[str, Any]]:
     return read_state().get("follower_series", [])
 
 
+# --- Boost mode (engagement-pod replies) ---
+
+@app.get("/api/engagement_pod")
+def engagement_pod() -> dict[str, Any]:
+    s = read_state()
+    return {
+        "enabled": bool(s.get("engagement_pod_enabled", False)),
+        "total": s.get("stats", {}).get("total_pod_replies", 0),
+        "history": s.get("engagement_pod_history", []),
+    }
+
+
+class PodToggleBody(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/engagement_pod/toggle")
+def engagement_pod_toggle(body: PodToggleBody) -> dict[str, Any]:
+    s = read_state()
+    s["engagement_pod_enabled"] = bool(body.enabled)
+    write_state(s)
+    return {"ok": True, "enabled": s["engagement_pod_enabled"]}
+
+
 @app.get("/api/own_velocity")
 def own_velocity() -> list[dict[str, Any]]:
     """Feature 4: Early-curve performance of our own recent tweets."""

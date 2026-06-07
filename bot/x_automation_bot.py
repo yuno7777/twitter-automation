@@ -99,6 +99,10 @@ MAX_ACTIONS_PER_VIP_PER_DAY = int(os.getenv("MAX_ACTIONS_PER_VIP_PER_DAY", "3"))
 # At 6+4+4+2+2+1+10 = 29 actions/cycle × 12 cycles = 348/day in the worst case.
 MAX_DAILY_ACTIONS = int(os.getenv("MAX_DAILY_ACTIONS", "200"))
 
+# Boost mode — replies to "comment X / follow back" engagement-pod posts.
+# OFF by default; toggled from the dashboard. Reply-only (never follows the OP).
+MAX_POD_REPLIES_PER_CYCLE = int(os.getenv("MAX_POD_REPLIES_PER_CYCLE", "6"))
+
 # Topic IDs — every tweet must fit cleanly into ONE of these for better routing.
 TOPIC_IDS = [
     "AI agents", "LLMs", "MLOps", "AI tools", "developer productivity",
@@ -450,6 +454,8 @@ DEFAULT_STATE: dict[str, Any] = {
     "ai_nudges": [],             # proactive suggestions surfaced to the owner
     "account_analytics": {},     # scraped X analytics overview (impressions, engagement rate, etc.)
     "follower_series": [],       # [{date, count}] daily follower snapshots for the trend chart
+    "engagement_pod_enabled": False,  # Boost mode toggle (dashboard-controlled, off by default)
+    "engagement_pod_history": [],     # log of pod replies for the dashboard
     "draft_queue": [],           # off-hours drafts pending your approval
     "critic_log": [],            # last 50 critic decisions for the dashboard
     # Trend-discovery memory — grows over time, drives smarter searches
@@ -469,6 +475,7 @@ DEFAULT_STATE: dict[str, Any] = {
         "total_quotes": 0,
         "total_reposts": 0,
         "total_follow_ups": 0,
+        "total_pod_replies": 0,
         "llm_calls_today": 0,
         "cycles_run": 0,
     },
@@ -498,7 +505,7 @@ def load_state() -> dict[str, Any]:
 # these, so before its wholesale save it must pull in whatever the API wrote —
 # otherwise the bot's stale in-memory copy clobbers chat sessions, memory, and
 # the audit log every cycle (a cross-process race).
-_API_OWNED_KEYS = ("chat_sessions", "chat_memory", "ai_actions_log", "custom_topic_ids")
+_API_OWNED_KEYS = ("chat_sessions", "chat_memory", "ai_actions_log", "custom_topic_ids", "engagement_pod_enabled")
 
 
 def _merge_external_state(state: dict[str, Any]) -> None:
@@ -607,6 +614,17 @@ def check_force_new_cycle() -> bool:
         return False
 
 
+def check_pod_enabled() -> bool:
+    """Read the Boost toggle FRESH from disk (like the status flag), so the
+    dashboard toggle takes effect immediately and the bot's stale in-memory copy
+    can never make a wrong call."""
+    try:
+        with STATE_PATH.open("r", encoding="utf-8") as f:
+            return bool(json.load(f).get("engagement_pod_enabled", False))
+    except Exception:
+        return False
+
+
 def consume_force_new_cycle(state: dict[str, Any]) -> None:
     """Clear the flag after we've acknowledged it."""
     state["force_new_cycle"] = False
@@ -617,6 +635,9 @@ async def respect_control(state: dict[str, Any]) -> bool:
     """Returns True if the bot should continue, False if it should exit the cycle."""
     flag = check_control_flag()
     state["status"] = flag
+    # Adopt the live Boost toggle from disk so the bot never writes back a stale
+    # value and clobbers the user's dashboard choice.
+    state["engagement_pod_enabled"] = check_pod_enabled()
     if flag == "paused":
         logger.info("Bot is paused — sleeping 30s and re-checking.")
         while check_control_flag() == "paused":
@@ -2056,6 +2077,69 @@ async def post_reply(page: Page, candidate: TweetCandidate, reply_text: str) -> 
             pass
         logger.warning(f"Reply failed: {e}. Screenshot: {path}")
         return False
+
+
+# ---------------------------------------------------------------------------
+# Boost mode — engagement-pod replies ("comment X / follow back" posts)
+# ---------------------------------------------------------------------------
+
+POD_SEARCH_QUERIES = [
+    "comment to connect", "I'll follow back", "comment and I follow back",
+    "comment consistent", "comment lock in", "drop a hello follow back",
+    "follow train", "need active followers comment", "support me I support you",
+    "verified followers comment", "grow together follow back", "let's connect follow back",
+]
+
+# Varied fallback replies when the pod doesn't specify a word to comment.
+GENERIC_POD_REPLIES = [
+    "hey, let's connect 🤝", "hello 👋 let's grow together", "hey! connecting 🙌",
+    "let's connect 🚀", "in! let's grow together", "hello 🙌", "hey 👋 let's connect",
+    "let's build together 🤝", "connecting 🙌 let's grow",
+]
+
+_POD_ANALYZER_SYSTEM = (
+    "You classify whether a tweet is an engagement / follow-for-follow pod post "
+    "(e.g. 'comment X and I'll follow back', 'support me I support you', 'drop a hello'). "
+    "You output STRICT JSON only."
+)
+
+
+async def analyze_pod_tweet(text: str, state: dict[str, Any]) -> dict[str, Any]:
+    """Detect if a tweet is an engagement pod and extract the exact word/phrase it
+    asks readers to comment. Returns {is_pod: bool, comment: str|None}."""
+    prompt = (
+        f"Tweet:\n\"\"\"\n{text[:400]}\n\"\"\"\n\n"
+        "Is this an engagement-pod / follow-for-follow post that invites strangers to "
+        "comment something to get follows/engagement? If it asks readers to comment a "
+        "SPECIFIC word or phrase (e.g. \"comment 'consistent'\", \"say hellooo\", "
+        "\"comment 'Lock in'\"), extract that EXACT word/phrase. "
+        'Return JSON only: {"is_pod": true/false, "comment": "<exact word/phrase or null>"}'
+    )
+    try:
+        raw = await call_llm(prompt, _POD_ANALYZER_SYSTEM, state)
+        parsed = intelligence._extract_json(raw or "")
+    except Exception:
+        parsed = None
+    if not parsed:
+        return {"is_pod": False, "comment": None}
+    comment = parsed.get("comment")
+    if isinstance(comment, str):
+        comment = comment.strip().strip("\"'").strip()
+        if not comment or comment.lower() in ("null", "none"):
+            comment = None
+    else:
+        comment = None
+    return {"is_pod": bool(parsed.get("is_pod")), "comment": comment}
+
+
+async def discover_pod_candidates(page: Page, query: str) -> list[TweetCandidate]:
+    """Find fresh engagement-pod posts (under 60 min, some traction)."""
+    try:
+        cands = await discover_reply_candidates(page, query)
+    except Exception as e:
+        logger.warning(f"Pod search '{query}' failed (non-fatal): {e}")
+        return []
+    return [c for c in cands if c.age_minutes <= 60]
 
 
 # ---------------------------------------------------------------------------
@@ -3540,6 +3624,65 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         break
                     await long_wait(10, 12, state, "Spacing between follows")
 
+            # --- Boost mode: engagement-pod replies (toggle-gated, reply-only) ---
+            # Read the toggle fresh from disk so a dashboard flip takes effect this
+            # cycle and the bot's in-memory copy never overrides the user's choice.
+            pod_replies_made = 0
+            if check_pod_enabled() and MAX_POD_REPLIES_PER_CYCLE > 0:
+                if not await respect_control(state):
+                    return
+                await long_wait(8, 11, state, "Boost: cooldown before pod replies")
+                used_pod_q: set[str] = set()
+                for _pi in range(MAX_POD_REPLIES_PER_CYCLE):
+                    if _daily_ceiling_hit(state):
+                        logger.warning("Daily ceiling hit — stopping Boost replies.")
+                        break
+                    if not await respect_control(state):
+                        return
+                    avail = [q for q in POD_SEARCH_QUERIES if q not in used_pod_q] or POD_SEARCH_QUERIES
+                    q = random.choice(avail)
+                    used_pod_q.add(q)
+                    set_action(state, f"Boost {_pi+1}/{MAX_POD_REPLIES_PER_CYCLE}: finding pod posts ('{q}')")
+                    cands = await discover_pod_candidates(page, q)
+                    cands = [
+                        c for c in cands
+                        if c.url not in state.get("replied_tweet_ids", [])
+                        and not _conversation_already_engaged(state, c.url)
+                    ]
+                    if not cands:
+                        continue
+                    cands.sort(key=lambda x: x.likes, reverse=True)
+                    target = None
+                    pod_comment = None
+                    # Confirm it's actually a pod + extract the requested word
+                    for cand in cands[:4]:
+                        info = await analyze_pod_tweet(cand.text, state)
+                        if info.get("is_pod"):
+                            target = cand
+                            pod_comment = info.get("comment") or random.choice(GENERIC_POD_REPLIES)
+                            break
+                    if not target:
+                        logger.info(f"No genuine pod post found for '{q}'.")
+                        continue
+                    set_action(state, f"Boost: replying '{pod_comment[:30]}'")
+                    if await post_reply(page, target, pod_comment):
+                        pod_replies_made += 1
+                        state["stats"]["total_pod_replies"] = state["stats"].get("total_pod_replies", 0) + 1
+                        state["replied_tweet_ids"].append(target.url)
+                        state["replied_tweet_ids"] = state["replied_tweet_ids"][-500:]
+                        _record_conversation(state, target.url)
+                        _bump_daily_count(state)
+                        state.setdefault("engagement_pod_history", []).insert(0, {
+                            "reply": pod_comment,
+                            "original_tweet_url": target.url,
+                            "original_tweet_text": target.text[:200],
+                            "posted_at": datetime.now(timezone.utc).isoformat(),
+                        })
+                        state["engagement_pod_history"] = state["engagement_pod_history"][:200]
+                        save_state(state)
+                    if _pi < MAX_POD_REPLIES_PER_CYCLE - 1:
+                        await long_wait(9, 13, state, "Boost: spacing between pod replies")
+
             # Adaptive cooldown counter: bump if 2+ errors this cycle, reset if clean
             cycle_errors = int(state.get("_cycle_error_count", 0) or 0)
             prev_consec = int(state.get("consecutive_error_cycles", 0) or 0)
@@ -3558,7 +3701,7 @@ async def run_cycle(state: dict[str, Any]) -> None:
                 f"Cycle complete. Posts: {posts_made} | Replies: {replies_made} | "
                 f"Likes: {likes_made} | Quotes: {quotes_made} | Reposts: {reposts_made} | "
                 f"Follow-ups: {follow_ups_made} | Follows: {follows_made} | "
-                f"VIP pool size: {len(VIP_HANDLES)} | "
+                f"Boost: {pod_replies_made} | VIP pool size: {len(VIP_HANDLES)} | "
                 f"LLM calls: {state['stats']['llm_calls_today']} | Errors: {cycle_errors} | "
                 f"Peak hour: {is_peak} | Next cycle in ~{CYCLE_INTERVAL_HOURS}h"
             )

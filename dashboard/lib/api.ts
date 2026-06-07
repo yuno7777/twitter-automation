@@ -302,6 +302,28 @@ export function getFollowerSeries() {
   return json<FollowerPoint[]>("/api/follower_series");
 }
 
+// --- Boost mode (engagement-pod replies) ---
+export interface PodReply {
+  reply: string;
+  original_tweet_url: string;
+  original_tweet_text?: string;
+  posted_at: string;
+}
+export interface EngagementPod {
+  enabled: boolean;
+  total: number;
+  history: PodReply[];
+}
+export function getEngagementPod() {
+  return json<EngagementPod>("/api/engagement_pod");
+}
+export function toggleEngagementPod(enabled: boolean) {
+  return json<{ ok: boolean; enabled: boolean }>("/api/engagement_pod/toggle", {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
 export interface OwnVelocityItem {
   url: string;
   text: string;

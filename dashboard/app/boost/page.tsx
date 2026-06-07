@@ -66,14 +66,14 @@ export default function BoostPage() {
           role="switch"
           aria-checked={enabled}
           className={cn(
-            "relative w-14 h-8 rounded-full transition-colors shrink-0 disabled:opacity-50",
+            "inline-flex items-center w-14 h-8 rounded-full p-1 transition-colors shrink-0 disabled:opacity-50",
             enabled ? "bg-lavender" : "bg-white/10"
           )}
         >
           <span
             className={cn(
-              "absolute top-1 w-6 h-6 rounded-full bg-white transition-transform",
-              enabled ? "translate-x-7" : "translate-x-1"
+              "block w-6 h-6 rounded-full bg-white shadow-sm transition-transform duration-200",
+              enabled ? "translate-x-6" : "translate-x-0"
             )}
           />
         </button>

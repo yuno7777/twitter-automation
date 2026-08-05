@@ -14,7 +14,6 @@ drfeifei
 GaryMarcus
 eladgil
 ylecun
-bengioy
 gdb
 OfficialLoganK
 alliekmiller
@@ -49,7 +48,6 @@ matshumer
 fredwilson
 cdixon
 perryazevedo
-apollovc
 
 # Business / digital
 valaafshar
@@ -64,7 +62,6 @@ AnthropicAI
 DeepMind
 nvidia
 NVIDIAAI
-MetaAI
 GoogleAI
 GroqInc
 midjourney

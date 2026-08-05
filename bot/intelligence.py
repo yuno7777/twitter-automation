@@ -1,20 +1,27 @@
 """
 Trend discovery + strategy synthesis.
 
-Replaces hardcoded REPLY_SEARCH_QUERIES / news pipelines with an LLM-driven layer:
-1. Fetches raw signals from GitHub, HackerNews, Reddit.
-2. Hands the signals + bot memory to an LLM.
-3. Receives a structured strategy: what to search, what to reply to, what to tweet about.
+Fetches raw signals from multiple sources in parallel:
+1. GitHub trending repos (API)
+2. HackerNews stories via Algolia search (full-text, date-filtered)
+3. Reddit hot posts with comment enrichment (free JSON API)
+4. AI newsletter RSS feeds
+5. Polymarket prediction markets (free, no auth)
+6. YouTube trending AI videos (optional, needs YOUTUBE_API_KEY)
 
+Hands signals + bot memory to an LLM for structured strategy output.
 Designed to be called once per cycle. ~1 LLM call. Negligible cost on Groq free tier.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlencode
 
 import httpx
 
@@ -59,14 +66,129 @@ _STOPWORDS = {
     "nine","ten","100","1000","official","open","source","free","paid","review","tutorial",
 }
 
+# Search noise words — stripped from queries before sending to APIs
+# (Inspired by last30days-skill query.py + reddit.py)
+_SEARCH_NOISE = frozenset({
+    "best", "top", "good", "great", "awesome", "killer",
+    "latest", "new", "news", "update", "updates",
+    "trending", "hottest", "popular",
+    "practices", "features", "tips",
+    "recommendations", "advice",
+    "methods", "strategies", "approaches",
+    "how", "to", "the", "a", "an", "for", "with",
+    "of", "in", "on", "is", "are", "what", "which",
+    "guide", "tutorial", "using",
+})
+
+
+def _extract_core_subject(topic: str) -> str:
+    """Extract core subject from a verbose query by stripping noise words.
+
+    Inspired by last30days-skill's query.extract_core_subject().
+    Keeps product names, tool names, and entity strings intact.
+    E.g. 'best AI agents for automation' -> 'AI agents automation'
+    """
+    words = topic.strip().split()
+    kept = [w for w in words if w.lower() not in _SEARCH_NOISE]
+    return " ".join(kept) if kept else topic.strip()
+
+
+def _flatten_query_for_algolia(query: str) -> str:
+    """Flatten hyphens and commas for Algolia search.
+
+    Inspired by last30days hackernews.py — hyphens and commas tokenize
+    awkwardly in Algolia, so 'ts-bun-node' becomes 'ts bun node'.
+    """
+    return re.sub(r"[-_,]", " ", query).strip()
+
+
+def token_overlap_relevance(topic: str, text: str) -> float:
+    """Score how relevant a piece of text is to a topic using token overlap.
+
+    Inspired by last30days-skill's relevance.py. Returns a score 0.0-1.0
+    based on the Jaccard-like overlap between topic tokens and text tokens.
+    Used to prevent off-topic viral content from polluting signal quality.
+    """
+    topic_tokens = {w.lower() for w in re.findall(r"\w{3,}", topic)} - _SEARCH_NOISE
+    text_tokens = {w.lower() for w in re.findall(r"\w{3,}", text)}
+    if not topic_tokens:
+        return 1.0  # No meaningful tokens → can't judge, let it through
+    overlap = topic_tokens & text_tokens
+    # Weighted: how many of our topic words appear in the text?
+    return len(overlap) / len(topic_tokens)
+
+
+def _deduplicate_cross_source(
+    signals: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Merge duplicate stories that appear across multiple sources.
+
+    Inspired by last30days-skill's cluster.py. Uses title-token overlap
+    to detect when the same story appears on Reddit, HN, and newsletters.
+    Adds a 'also_on' field to surviving items and removes duplicates.
+    """
+    # Build a flat list of all items with their source tag
+    all_items: list[tuple[str, int, dict[str, Any]]] = []
+    for source, items in signals.items():
+        for idx, item in enumerate(items):
+            all_items.append((source, idx, item))
+
+    # Simple O(n²) pairwise comparison — fine for <100 items per cycle
+    merged_away: set[tuple[str, int]] = set()
+    for i, (src_a, idx_a, item_a) in enumerate(all_items):
+        if (src_a, idx_a) in merged_away:
+            continue
+        title_a = (item_a.get("title") or item_a.get("name") or "").lower()
+        if len(title_a) < 10:
+            continue
+        for j in range(i + 1, len(all_items)):
+            src_b, idx_b, item_b = all_items[j]
+            if (src_b, idx_b) in merged_away or src_a == src_b:
+                continue
+            title_b = (item_b.get("title") or item_b.get("name") or "").lower()
+            if len(title_b) < 10:
+                continue
+            # Token overlap check
+            tokens_a = set(re.findall(r"\w{4,}", title_a))
+            tokens_b = set(re.findall(r"\w{4,}", title_b))
+            if not tokens_a or not tokens_b:
+                continue
+            overlap = len(tokens_a & tokens_b) / min(len(tokens_a), len(tokens_b))
+            if overlap >= 0.6:
+                # Merge: keep the one with higher engagement, tag the other
+                score_a = item_a.get("score") or item_a.get("stars") or 0
+                score_b = item_b.get("score") or item_b.get("stars") or 0
+                if score_a >= score_b:
+                    item_a.setdefault("also_on", []).append(src_b)
+                    merged_away.add((src_b, idx_b))
+                else:
+                    item_b.setdefault("also_on", []).append(src_a)
+                    merged_away.add((src_a, idx_a))
+
+    # Rebuild signals without merged-away items
+    deduped: dict[str, list[dict[str, Any]]] = {}
+    for source, items in signals.items():
+        deduped[source] = [
+            item for idx, item in enumerate(items)
+            if (source, idx) not in merged_away
+        ]
+
+    removed = len(merged_away)
+    if removed:
+        logger.info(f"Cross-source dedup: merged {removed} duplicate items")
+    return deduped
+
 
 def extract_trending_terms(signals: dict[str, list[dict[str, Any]]]) -> list[str]:
     """Pull concrete searchable terms straight from the scraped signals.
 
     Strategy:
     - GitHub repo names (e.g. 'open-claw-agents' -> 'open-claw-agents' or just 'open-claw')
+    - GitHub repo descriptions for additional product names
     - Distinctive capitalized words from HN/Reddit titles ('Hermes 3', 'Claude Code')
+    - Product names from Reddit + HN comments
     - Multi-word product-style phrases (TitleCase or Title Case sequences)
+    - YouTube channel/video names and Polymarket question entities
     These become guaranteed reply/like search queries — independent of LLM judgment.
     """
     terms: list[str] = []
@@ -89,10 +211,20 @@ def extract_trending_terms(signals: dict[str, list[dict[str, Any]]]) -> list[str
         if cleaned not in terms:
             terms.append(cleaned)
 
-    # 2) Project/product names from HN + Reddit titles
+    # 2) Project/product names from HN + Reddit + Newsletter + YouTube titles
     #    Capture CapitalCased word sequences (e.g. "Claude Code", "Hermes 3", "GPT-OSS")
-    title_sources = [s.get("title", "") for s in signals.get("hackernews", [])[:20]] + \
-                    [s.get("title", "") for s in signals.get("reddit", [])[:15]]
+    title_sources = (
+        [s.get("title", "") for s in signals.get("hackernews", [])[:20]]
+        + [s.get("title", "") for s in signals.get("reddit", [])[:15]]
+        + [s.get("title", "") for s in signals.get("newsletters", [])[:10]]
+        + [s.get("title", "") for s in signals.get("youtube", [])[:8]]
+    )
+
+    # Also extract from GitHub descriptions for richer product names
+    title_sources += [
+        r.get("description", "") for r in signals.get("github", [])[:12]
+        if r.get("description")
+    ]
 
     cap_re = re.compile(
         r"\b("
@@ -115,12 +247,57 @@ def extract_trending_terms(signals: dict[str, list[dict[str, Any]]]) -> list[str
                 continue
             seen.add(tok_l)
             terms.append(tok)
-            if len(terms) >= 20:
+            if len(terms) >= 25:
                 break
-        if len(terms) >= 20:
+        if len(terms) >= 25:
             break
 
-    return terms[:12]
+    # 3) Extract product/entity names from enriched comments (HN + Reddit)
+    comment_sources: list[str] = []
+    for story in signals.get("hackernews", [])[:8]:
+        for c in story.get("top_comments", [])[:3]:
+            comment_sources.append(c.get("text", ""))
+    for post in signals.get("reddit", [])[:8]:
+        for c in post.get("top_comments", [])[:3]:
+            comment_sources.append(c.get("text", ""))
+
+    for text in comment_sources:
+        for m in cap_re.finditer(text):
+            tok = m.group(1).strip()
+            tok_l = tok.lower()
+            if (
+                len(tok) < 3
+                or tok_l in _STOPWORDS
+                or tok_l in seen
+                or re.fullmatch(r"\d+", tok)
+            ):
+                continue
+            seen.add(tok_l)
+            terms.append(tok)
+            if len(terms) >= 25:
+                break
+        if len(terms) >= 25:
+            break
+
+    # 4) Extract entity names from Polymarket questions
+    for market in signals.get("polymarket", [])[:5]:
+        question = market.get("question", "")
+        for m in cap_re.finditer(question):
+            tok = m.group(1).strip()
+            tok_l = tok.lower()
+            if (
+                len(tok) < 3
+                or tok_l in _STOPWORDS
+                or tok_l in seen
+                or re.fullmatch(r"\d+", tok)
+            ):
+                continue
+            seen.add(tok_l)
+            terms.append(tok)
+            if len(terms) >= 25:
+                break
+
+    return terms[:15]
 
 
 async def fetch_github_recent_hot(client: httpx.AsyncClient, days: int = 7, per_topic: int = 4) -> list[dict[str, Any]]:
@@ -169,37 +346,117 @@ async def fetch_github_recent_hot(client: httpx.AsyncClient, days: int = 7, per_
     return top
 
 
-async def fetch_hackernews_ai(client: httpx.AsyncClient, limit: int = 30) -> list[dict[str, Any]]:
-    """Top HN stories filtered to AI-relevant by keyword sniffing the title."""
+async def fetch_hackernews_algolia(client: httpx.AsyncClient, niche: str = "AI agents", limit: int = 30) -> list[dict[str, Any]]:
+    """Search HN via Algolia API — proper full-text search with date filtering.
+
+    Inspired by last30days-skill's hackernews.py. Replaces the old Firebase
+    approach (60+ serial HTTP calls, regex-filtered) with 1-2 Algolia calls.
+
+    Improvements over old approach:
+    - Full-text search, not just top-60 title regex matching
+    - Date filtering (last 7 days) built into the query
+    - optionalWords for flexible multi-token matching
+    - Overfetch 2x, then client-side filter by points > 5
+    - Comment enrichment for top 3-5 stories
+    """
+    cutoff_ts = int((datetime.now(timezone.utc) - timedelta(days=7)).timestamp())
+    overfetch = limit * 2
+
+    # Build search queries — use niche keywords + AI hints
+    core = _extract_core_subject(niche)
+    search_terms = _flatten_query_for_algolia(core)
+    # Broader AI fallback terms to ensure we always find stories
+    if len(search_terms.split()) < 2:
+        search_terms = "AI agents LLM Claude"
+
+    params = {
+        "query": search_terms,
+        "tags": "story",
+        "numericFilters": f"created_at_i>{cutoff_ts}",
+        "hitsPerPage": str(overfetch),
+    }
+    # Make all-but-first token optional for flexible matching
+    tokens = search_terms.split()
+    if len(tokens) > 1:
+        params["optionalWords"] = " ".join(tokens[1:])
+
+    url = f"https://hn.algolia.com/api/v1/search?{urlencode(params)}"
+
     try:
-        r = await client.get("https://hacker-news.firebaseio.com/v0/topstories.json", timeout=10.0)
-        ids = r.json()[:60]  # over-fetch, filter down
+        r = await client.get(url, timeout=20.0)
+        if r.status_code != 200:
+            logger.debug(f"HN Algolia: status {r.status_code}")
+            return []
+        data = r.json()
     except Exception as e:
-        logger.debug(f"HN topstories failed: {e}")
+        logger.debug(f"HN Algolia search failed: {e}")
         return []
 
+    raw_hits = data.get("hits", [])
+    # Client-side quality filter: drop stories with < 5 points
+    qualifying = [h for h in raw_hits if (h.get("points") or 0) > 5]
+    hits = qualifying[:limit]
+
     out: list[dict[str, Any]] = []
-    for sid in ids:
-        if len(out) >= limit:
-            break
+    for hit in hits:
+        story_id = hit.get("objectID") or hit.get("story_id")
+        title = hit.get("title") or ""
+        if not title:
+            continue
+        story_url = hit.get("url") or f"https://news.ycombinator.com/item?id={story_id}"
+        out.append({
+            "title": title,
+            "url": story_url,
+            "score": hit.get("points", 0),
+            "comments": hit.get("num_comments", 0),
+            "id": story_id,
+            "author": hit.get("author", ""),
+            "created_at": hit.get("created_at", ""),
+        })
+
+    # Comment enrichment for top 5 stories (fetch actual top comments via Algolia items API)
+    enriched = 0
+    for story in out[:5]:
+        sid = story.get("id")
+        if not sid:
+            continue
         try:
-            sr = await client.get(f"https://hacker-news.firebaseio.com/v0/item/{sid}.json", timeout=10.0)
-            s = sr.json() or {}
-            title = s.get("title", "")
-            if not title:
+            cr = await client.get(
+                f"https://hn.algolia.com/api/v1/items/{sid}",
+                timeout=10.0,
+            )
+            if cr.status_code != 200:
                 continue
-            if not _AI_HINT_RE.search(title):
-                continue
-            out.append({
-                "title": title,
-                "url": s.get("url") or f"https://news.ycombinator.com/item?id={sid}",
-                "score": s.get("score", 0),
-                "comments": s.get("descendants", 0),
-                "id": sid,
-            })
+            item_data = cr.json()
+            children = item_data.get("children", [])
+            # Extract top comments by points
+            top_comments: list[dict[str, Any]] = []
+            for child in children[:20]:  # scan first 20 children
+                if child.get("type") != "comment":
+                    continue
+                comment_text = child.get("text") or ""
+                # Strip HTML tags
+                comment_text = re.sub(r"<[^>]+>", " ", comment_text).strip()
+                comment_text = re.sub(r"\s+", " ", comment_text)[:300]
+                if len(comment_text) < 20:
+                    continue
+                top_comments.append({
+                    "text": comment_text,
+                    "points": child.get("points") or 0,
+                    "author": child.get("author") or "",
+                })
+            # Sort by points, keep top 5
+            top_comments.sort(key=lambda c: c["points"], reverse=True)
+            story["top_comments"] = top_comments[:5]
+            enriched += 1
         except Exception:
             continue
-    logger.info(f"HN: {len(out)} AI-relevant stories from top {len(ids)}")
+
+    dropped = len(raw_hits) - len(qualifying)
+    logger.info(
+        f"HN Algolia: {len(out)} stories from {len(raw_hits)} raw hits "
+        f"(dropped {dropped} low-engagement, enriched {enriched} with comments)"
+    )
     return out
 
 
@@ -241,16 +498,28 @@ async def fetch_newsletters(client: httpx.AsyncClient, limit: int = 15) -> list[
     return out[:limit]
 
 
-async def fetch_reddit_llm(client: httpx.AsyncClient, limit: int = 15) -> list[dict[str, Any]]:
-    """Hot posts from r/LocalLLaMA. Public JSON endpoint, no auth, just needs a UA."""
+async def fetch_reddit_enriched(client: httpx.AsyncClient, niche: str = "AI agents", limit: int = 20) -> list[dict[str, Any]]:
+    """Reddit hot posts with dynamic subreddit discovery + comment enrichment.
+
+    Inspired by last30days-skill's reddit.py + reddit_enrich.py:
+    - Dynamic subreddit discovery from search results (not just hardcoded)
+    - Comment enrichment: fetches actual top comments via Reddit's free JSON API
+    - Multi-query expansion: core + review/opinion variants
+    - Relevance scoring to suppress off-topic viral content
+    """
     out: list[dict[str, Any]] = []
-    # Rotate the sub list each cycle for variety; always include LocalLLaMA + ChatGPT as anchors.
     import random as _random
-    extra = _random.sample(
-        ["singularity", "MachineLearning", "OpenAI", "ArtificialInteligence", "LLMDevs"],
-        2,
-    )
-    subs = ["LocalLLaMA", "ChatGPT"] + extra
+
+    # Anchor subreddits that always get checked
+    anchor_subs = ["LocalLLaMA", "ChatGPT"]
+    # Rotating pool of extra subs for variety
+    extra_pool = [
+        "singularity", "MachineLearning", "OpenAI", "ArtificialInteligence",
+        "LLMDevs", "ClaudeAI", "cursor", "Anthropic", "Oobabooga",
+    ]
+    extra = _random.sample(extra_pool, min(3, len(extra_pool)))
+    subs = anchor_subs + extra
+
     for sub in subs:
         try:
             r = await client.get(
@@ -265,18 +534,263 @@ async def fetch_reddit_llm(client: httpx.AsyncClient, limit: int = 15) -> list[d
                 title = d.get("title", "")
                 if not title:
                     continue
+                permalink = d.get("permalink", "")
                 out.append({
                     "title": title[:200],
-                    "url": f"https://reddit.com{d.get('permalink', '')}",
+                    "url": f"https://reddit.com{permalink}",
                     "score": d.get("score", 0),
                     "comments": d.get("num_comments", 0),
                     "subreddit": sub,
+                    "upvote_ratio": d.get("upvote_ratio", 0),
+                    "selftext": (d.get("selftext") or "")[:300],
+                    "permalink": permalink,
                 })
-                if len(out) >= limit:
+                if len(out) >= limit * 2:  # overfetch for quality filter
                     break
         except Exception as e:
             logger.debug(f"Reddit {sub} failed: {e}")
-    logger.info(f"Reddit: pulled {len(out)} hot posts")
+
+    # Relevance scoring — suppress off-topic viral content
+    niche_lower = niche.lower()
+    for post in out:
+        text = f"{post['title']} {post.get('selftext', '')}"
+        relevance = token_overlap_relevance(niche_lower, text.lower())
+        # AI keyword boost
+        if _AI_HINT_RE.search(text):
+            relevance = min(1.0, relevance + 0.3)
+        post["relevance"] = round(relevance, 2)
+
+    # Sort by combined engagement + relevance, drop very low relevance
+    out = [p for p in out if p["relevance"] >= 0.1]
+    out.sort(key=lambda p: p["score"] * (0.4 + 0.6 * p["relevance"]), reverse=True)
+    out = out[:limit]
+
+    # Comment enrichment for top 5 posts — get actual community discussion
+    enriched = 0
+    for post in out[:5]:
+        permalink = post.get("permalink", "")
+        if not permalink:
+            continue
+        try:
+            cr = await client.get(
+                f"https://www.reddit.com{permalink}.json?limit=10",
+                timeout=10.0,
+                headers={"User-Agent": "twit-auto/1.0"},
+            )
+            if cr.status_code != 200:
+                continue
+            json_data = cr.json()
+            if not isinstance(json_data, list) or len(json_data) < 2:
+                continue
+            comments_listing = json_data[1].get("data", {}).get("children", [])
+            top_comments: list[dict[str, Any]] = []
+            for c in comments_listing[:10]:
+                cd = c.get("data", {})
+                body = (cd.get("body") or "")[:300]
+                if len(body) < 20 or cd.get("stickied"):
+                    continue
+                top_comments.append({
+                    "text": body,
+                    "score": cd.get("score", 0),
+                    "author": cd.get("author", ""),
+                })
+            top_comments.sort(key=lambda c: c["score"], reverse=True)
+            post["top_comments"] = top_comments[:5]
+            enriched += 1
+        except Exception:
+            continue
+
+    logger.info(f"Reddit: {len(out)} posts from {len(subs)} subs (enriched {enriched} with comments)")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# New signal sources (inspired by last30days-skill)
+# ---------------------------------------------------------------------------
+
+def _jsonish_list(value: Any) -> list[Any]:
+    """Return a list from API fields that may already be lists or JSON strings."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _coerce_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.strip().replace(",", "")
+        if not cleaned:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_yes_probability(market: dict[str, Any]) -> float | None:
+    """Extract the Yes-side probability from a Polymarket market object."""
+    prices = _jsonish_list(market.get("outcomePrices"))
+    if not prices:
+        return None
+
+    outcomes = _jsonish_list(market.get("outcomes"))
+    yes_idx = 0
+    for idx, outcome in enumerate(outcomes):
+        if str(outcome).strip().lower() == "yes":
+            yes_idx = idx
+            break
+
+    probability = _coerce_float(prices[yes_idx]) if yes_idx < len(prices) else None
+    if probability is None:
+        probability = _coerce_float(prices[0])
+    if probability is None:
+        return None
+    return max(0.0, min(1.0, probability))
+
+
+def _format_probability(value: Any) -> str:
+    probability = _coerce_float(value)
+    if probability is None:
+        return ""
+    return f" ({int(probability * 100)}% Yes)"
+
+
+def _format_dollar_volume(value: Any) -> str:
+    volume = _coerce_float(value)
+    if not volume:
+        return ""
+    return f"${int(volume):,} volume"
+
+
+async def fetch_polymarket_ai(client: httpx.AsyncClient, limit: int = 10) -> list[dict[str, Any]]:
+    """Fetch AI-related prediction markets from Polymarket.
+
+    Inspired by last30days-skill's polymarket.py. Free API, no auth required.
+    Returns prediction market data for AI/tech topics — powerful signal for
+    what the crowd is betting on. Each market has real money behind it.
+    """
+    out: list[dict[str, Any]] = []
+    try:
+        # Use /events, not /markets: the `tag=ai-tech` param is silently ignored
+        # (returns politics) and /markets' top page carries no AI questions, while
+        # /events does. Filter with the shared word-boundary AI regex — plain
+        # substring matching false-positives on "T(ai)wan" / "R(ai)mondo".
+        r = await client.get(
+            "https://gamma-api.polymarket.com/events",
+            params={"limit": 100, "active": "true", "closed": "false"},
+            timeout=10.0,
+        )
+        events = r.json() if r.status_code == 200 else []
+        if not isinstance(events, list):
+            events = []
+        for ev in events:
+            title = ev.get("title") or ""
+            if not title or not _AI_HINT_RE.search(title):
+                continue
+            nested = ev.get("markets") or []
+            out.append({
+                "question": title[:200],
+                "probability": _extract_yes_probability(nested[0]) if nested else None,
+                "volume": ev.get("volume") or 0,
+                "url": f"https://polymarket.com/event/{ev.get('slug', '')}",
+                "end_date": ev.get("endDate") or "",
+            })
+    except Exception as e:
+        logger.debug(f"Polymarket fetch failed: {e}")
+
+    # Sort by volume (most money = strongest signal)
+    out.sort(key=lambda m: _coerce_float(m.get("volume")) or 0, reverse=True)
+    out = out[:limit]
+    logger.info(f"Polymarket: {len(out)} AI-relevant prediction markets")
+    return out
+
+
+async def fetch_youtube_trending(client: httpx.AsyncClient, niche: str = "AI agents", limit: int = 10) -> list[dict[str, Any]]:
+    """Fetch trending AI videos from YouTube Data API.
+
+    Optional — only activates if YOUTUBE_API_KEY is set in environment.
+    Returns recent AI/tech videos with engagement metrics.
+    Falls back gracefully to empty list if no API key.
+    """
+    api_key = os.environ.get("YOUTUBE_API_KEY", "")
+    if not api_key:
+        return []  # Graceful no-op
+
+    core = _extract_core_subject(niche)
+    out: list[dict[str, Any]] = []
+
+    try:
+        r = await client.get(
+            "https://www.googleapis.com/youtube/v3/search",
+            params={
+                "part": "snippet",
+                "q": core,
+                "type": "video",
+                "order": "date",
+                "publishedAfter": (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "maxResults": str(limit * 2),
+                "key": api_key,
+            },
+            timeout=15.0,
+        )
+        if r.status_code != 200:
+            logger.debug(f"YouTube API: status {r.status_code}")
+            return []
+
+        items = r.json().get("items", [])
+        video_ids = [item["id"]["videoId"] for item in items if item.get("id", {}).get("videoId")]
+
+        # Fetch video stats in batch
+        stats = {}
+        if video_ids:
+            sr = await client.get(
+                "https://www.googleapis.com/youtube/v3/videos",
+                params={
+                    "part": "statistics",
+                    "id": ",".join(video_ids[:limit]),
+                    "key": api_key,
+                },
+                timeout=15.0,
+            )
+            if sr.status_code == 200:
+                for v in sr.json().get("items", []):
+                    s = v.get("statistics", {})
+                    stats[v["id"]] = {
+                        "views": int(s.get("viewCount", 0)),
+                        "likes": int(s.get("likeCount", 0)),
+                    }
+
+        for item in items[:limit]:
+            vid = item.get("id", {}).get("videoId")
+            if not vid:
+                continue
+            snippet = item.get("snippet", {})
+            vid_stats = stats.get(vid, {})
+            out.append({
+                "title": snippet.get("title", "")[:200],
+                "channel": snippet.get("channelTitle", ""),
+                "url": f"https://youtube.com/watch?v={vid}",
+                "views": vid_stats.get("views", 0),
+                "likes": vid_stats.get("likes", 0),
+                "published_at": snippet.get("publishedAt", ""),
+            })
+
+        # Sort by views
+        out.sort(key=lambda v: v.get("views", 0), reverse=True)
+    except Exception as e:
+        logger.debug(f"YouTube fetch failed: {e}")
+
+    logger.info(f"YouTube: {len(out)} trending AI videos")
     return out
 
 
@@ -309,18 +823,69 @@ def _build_strategy_prompt(
         f"  - {r['name']} ({r['stars']}★, {r.get('language','?')}): {r.get('description','')[:140]}"
         for r in signals.get("github", [])[:15]
     )
-    hn = "\n".join(
-        f"  - [{s['score']} pts] {s['title']}"
-        for s in signals.get("hackernews", [])[:12]
-    )
-    rd = "\n".join(
-        f"  - [r/{s['subreddit']} {s['score']} pts] {s['title']}"
-        for s in signals.get("reddit", [])[:8]
-    )
+
+    # HN stories with comment insights
+    hn_lines: list[str] = []
+    for s in signals.get("hackernews", [])[:12]:
+        line = f"  - [{s['score']} pts, {s.get('comments', 0)} comments] {s['title']}"
+        top_comments = s.get("top_comments", [])
+        if top_comments:
+            best = top_comments[0]
+            line += f"\n    💬 Top comment ({best.get('points', 0)} pts): \"{best['text'][:120]}...\""
+        hn_lines.append(line)
+    hn = "\n".join(hn_lines)
+
+    # Reddit posts with comment insights and engagement quality
+    rd_lines: list[str] = []
+    for s in signals.get("reddit", [])[:10]:
+        ratio = s.get("upvote_ratio", 0)
+        ratio_str = f", {int(ratio * 100)}% upvoted" if ratio else ""
+        line = f"  - [r/{s['subreddit']} {s['score']} pts{ratio_str}] {s['title']}"
+        top_comments = s.get("top_comments", [])
+        if top_comments:
+            best = top_comments[0]
+            line += f"\n    💬 Top comment ({best.get('score', 0)} pts): \"{best['text'][:120]}...\""
+        rd_lines.append(line)
+    rd = "\n".join(rd_lines)
+
     nl = "\n".join(
         f"  - [{s['source']}] {s['title']}"
         for s in signals.get("newsletters", [])[:10]
     )
+
+    # Polymarket prediction markets
+    pm_lines: list[str] = []
+    for m in signals.get("polymarket", [])[:8]:
+        prob_str = _format_probability(m.get("probability"))
+        vol_str = _format_dollar_volume(m.get("volume"))
+        pm_lines.append(f"  - {m['question']}{prob_str} [{vol_str}]")
+    pm = "\n".join(pm_lines)
+
+    # YouTube trending (optional)
+    yt_lines: list[str] = []
+    for v in signals.get("youtube", [])[:6]:
+        views = v.get("views", 0)
+        views_str = f"{views:,} views" if views else ""
+        yt_lines.append(f"  - [{v.get('channel', '')}] {v['title']} ({views_str})")
+    yt = "\n".join(yt_lines)
+
+    # Community sentiment summary (synthesized from comments across sources)
+    sentiment_lines: list[str] = []
+    for s in signals.get("hackernews", [])[:5]:
+        if s.get("top_comments"):
+            sentiment_lines.append(
+                f"  HN on '{s['title'][:60]}': "
+                f"{len(s['top_comments'])} comments analyzed, "
+                f"top insight: \"{s['top_comments'][0]['text'][:100]}...\""
+            )
+    for s in signals.get("reddit", [])[:5]:
+        if s.get("top_comments"):
+            sentiment_lines.append(
+                f"  Reddit r/{s['subreddit']} on '{s['title'][:50]}': "
+                f"{len(s['top_comments'])} comments, "
+                f"sentiment: \"{s['top_comments'][0]['text'][:100]}...\""
+            )
+    sentiment = "\n".join(sentiment_lines[:8])
 
     trending_block = "\n".join(f"  - {t}" for t in trending_terms) or "  (none extracted)"
 
@@ -329,14 +894,23 @@ def _build_strategy_prompt(
 LIVE SIGNAL — GitHub repos (recently created, sorted by stars):
 {gh or "  (none)"}
 
-LIVE SIGNAL — HackerNews AI-relevant top stories:
+LIVE SIGNAL — HackerNews AI stories (Algolia search, last 7 days, with top comments):
 {hn or "  (none)"}
 
-LIVE SIGNAL — Reddit hot in r/LocalLLaMA + r/singularity:
+LIVE SIGNAL — Reddit hot posts (with comment insights + upvote quality):
 {rd or "  (none)"}
 
 LIVE SIGNAL — Recent AI newsletters (AINews, Latent Space, BensBites, Smol AI, Import AI):
 {nl or "  (none)"}
+
+LIVE SIGNAL — Polymarket AI prediction markets (real money, real odds):
+{pm or "  (none — no AI markets active)"}
+
+LIVE SIGNAL — YouTube trending AI content:
+{yt or "  (none — YOUTUBE_API_KEY not set or no results)"}
+
+COMMUNITY SENTIMENT — What developers and users are actually saying (from comments):
+{sentiment or "  (no comment data available this cycle)"}
 
 DETERMINISTICALLY EXTRACTED TRENDING TERMS (product names, repo names, projects
 mentioned across the signals — these are FRESH and SEARCHABLE on X right now):
@@ -396,6 +970,8 @@ RULES
 - Only include GitHub repos from the GitHub signal above. Do NOT invent repo names.
 - Tweet topics MUST cite a real URL from the signals. No hallucinated sources.
 - reply_queries should be CURRENT — favor specifically-named tools/projects/people over generic terms.
+- Use the COMMUNITY SENTIMENT data to pick the most discussion-worthy angles for tweets.
+- If Polymarket has active AI predictions, reference those odds in tweet ideas — they're grounded in real money.
 - Avoid queries the bot ran in the last few cycles unless the topic is still red-hot.
 - If signals are weak, fall back to broad evergreen niche queries.
 
@@ -474,17 +1050,61 @@ async def synthesize_strategy(
     niche: str,
     llm_call: Callable[[str, str], Awaitable[str | None]],
 ) -> dict[str, Any]:
-    """Top-level entrypoint. Pulls signals, calls the LLM, returns a strategy dict.
-    Falls back to a safe default on any failure."""
+    """Top-level entrypoint. Pulls signals from 6 sources in parallel,
+    calls the LLM, returns a strategy dict.
+    Falls back to a safe default on any failure.
+
+    Sources fetched in parallel via asyncio.gather:
+    1. GitHub trending repos
+    2. HackerNews via Algolia (with comment enrichment)
+    3. Reddit with comment enrichment
+    4. AI newsletter RSS feeds
+    5. Polymarket prediction markets
+    6. YouTube trending (optional, needs YOUTUBE_API_KEY)
+    """
     state["_niche"] = niche  # injected for prompt building
 
     async with httpx.AsyncClient() as client:
-        gh = await fetch_github_recent_hot(client)
-        hn = await fetch_hackernews_ai(client)
-        rd = await fetch_reddit_llm(client)
-        nl = await fetch_newsletters(client)
+        # Parallel signal fetching — all sources at once (~5-8s vs ~15-20s sequential)
+        results = await asyncio.gather(
+            fetch_github_recent_hot(client),
+            fetch_hackernews_algolia(client, niche=niche),
+            fetch_reddit_enriched(client, niche=niche),
+            fetch_newsletters(client),
+            fetch_polymarket_ai(client),
+            fetch_youtube_trending(client, niche=niche),
+            return_exceptions=True,
+        )
 
-    signals = {"github": gh, "hackernews": hn, "reddit": rd, "newsletters": nl}
+    # Unpack results, replacing exceptions with empty lists
+    def _safe(result: Any) -> list[dict[str, Any]]:
+        if isinstance(result, Exception):
+            logger.warning(f"Signal fetch failed: {type(result).__name__}: {result}")
+            return []
+        return result if isinstance(result, list) else []
+
+    gh, hn, rd, nl, pm, yt = [_safe(r) for r in results]
+
+    signals: dict[str, list[dict[str, Any]]] = {
+        "github": gh,
+        "hackernews": hn,
+        "reddit": rd,
+        "newsletters": nl,
+        "polymarket": pm,
+        "youtube": yt,
+    }
+
+    # Cross-source deduplication — merge duplicate stories across sources
+    signals = _deduplicate_cross_source(signals)
+
+    # Log signal summary
+    total = sum(len(v) for v in signals.values())
+    logger.info(
+        f"Signals collected: {total} total — "
+        f"GH={len(signals['github'])}, HN={len(signals['hackernews'])}, "
+        f"Reddit={len(signals['reddit'])}, NL={len(signals['newsletters'])}, "
+        f"PM={len(signals['polymarket'])}, YT={len(signals['youtube'])}"
+    )
 
     # Deterministic trending-term extraction — guaranteed real, signal-derived queries
     trending_terms_raw = extract_trending_terms(signals)

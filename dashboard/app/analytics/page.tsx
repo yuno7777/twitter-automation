@@ -18,7 +18,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { AnalyticsResponse, fetcher, OptimalHoursResponse } from "@/lib/api";
+import { AnalyticsResponse, CriticCalibration, fetcher, OptimalHoursResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   ArrowDownRight,
@@ -345,6 +345,9 @@ export default function AnalyticsPage() {
         </section>
       )}
 
+      {/* Critic calibration — is the scorer actually predicting engagement? */}
+      <CriticCalibrationCard />
+
       {/* Top tweets */}
       <section className="glass p-6">
         <h2 className="text-lg font-semibold mb-1">Top-performing tweets</h2>
@@ -379,6 +382,110 @@ export default function AnalyticsPage() {
         </div>
       </section>
     </div>
+  );
+}
+
+const AXIS_LABELS: Record<string, string> = {
+  score: "Overall score",
+  hook: "Hook",
+  first_line_hook: "First-line hook",
+  voice_match: "Voice match",
+  value: "Value",
+  grounding: "Grounding",
+  predicted_engagement: "Predicted engagement",
+};
+
+function CriticCalibrationCard() {
+  const { data } = useSWR<CriticCalibration>("/api/critic_calibration", fetcher, {
+    refreshInterval: 60000,
+  });
+  if (!data) return null;
+
+  const { sample_size, with_engagement, correlations, rows } = data;
+  const entries = Object.entries(correlations);
+  const usable = entries.filter(([, v]) => v !== null);
+
+  return (
+    <section className="glass p-6">
+      <h2 className="text-lg font-semibold mb-1">Critic vs reality</h2>
+      <p className="text-xs text-muted mb-4">
+        How each critic axis correlates with the engagement the tweet actually got.
+        +1 = predicts perfectly, 0 = no relationship, −1 = inversely related.
+      </p>
+
+      {sample_size === 0 ? (
+        <div className="text-sm text-muted">
+          No scored tweets measured yet. Every tweet posted from now on carries its
+          critic scores; they pair up with real engagement ~30 min after posting.
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-2 mb-4 text-xs">
+            <span className="pill px-2.5 py-1 bg-white/5 num">{sample_size} scored tweets</span>
+            <span className="pill px-2.5 py-1 bg-white/5 num">{with_engagement} with any engagement</span>
+          </div>
+
+          {usable.length === 0 ? (
+            <div className="glass p-4 border-amber-500/30 bg-amber-500/5 text-xs text-muted">
+              Not enough signal to correlate yet — needs 3+ scored tweets and some
+              variation in engagement. Right now nearly every tweet has the same
+              (zero) result, so no axis can be judged.
+            </div>
+          ) : (
+            <ul className="space-y-2 mb-4">
+              {entries.map(([axis, v]) => (
+                <li key={axis} className="flex items-center gap-3 text-sm">
+                  <span className="w-40 shrink-0 text-muted">{AXIS_LABELS[axis] || axis}</span>
+                  {v === null ? (
+                    <span className="text-xs text-muted/60">not enough data</span>
+                  ) : (
+                    <>
+                      <div className="flex-1 h-1.5 rounded-full bg-white/5 relative overflow-hidden">
+                        <div
+                          className={cn(
+                            "absolute top-0 h-full rounded-full",
+                            v >= 0 ? "bg-emerald-400" : "bg-rose-400"
+                          )}
+                          style={{
+                            left: v >= 0 ? "50%" : `${50 + v * 50}%`,
+                            width: `${Math.abs(v) * 50}%`,
+                          }}
+                        />
+                        <div className="absolute left-1/2 top-0 h-full w-px bg-white/20" />
+                      </div>
+                      <span className={cn("num text-xs w-12 text-right", v >= 0 ? "text-emerald-300" : "text-rose-300")}>
+                        {v > 0 ? "+" : ""}{v}
+                      </span>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {rows.length > 0 && (
+            <details className="text-xs">
+              <summary className="cursor-pointer text-muted hover:text-white">
+                Per-tweet detail ({rows.length})
+              </summary>
+              <ul className="mt-2 space-y-1">
+                {rows.map((r, i) => (
+                  <li key={i} className="flex items-center gap-3 border-b border-border last:border-0 py-1.5">
+                    <span className="num text-lavender w-10 shrink-0">
+                      {String(r.critic.score ?? "—")}
+                    </span>
+                    <span className="flex-1 truncate text-muted">{r.text}</span>
+                    <span className={cn("num shrink-0", r.engagement > 0 ? "text-emerald-300" : "text-muted/50")}>
+                      {r.engagement} eng
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

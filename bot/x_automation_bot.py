@@ -935,6 +935,21 @@ def format_top_tweets(state: dict[str, Any], n: int = 3) -> str:
     return "\n".join(out)
 
 
+# Numeric critic axes worth keeping alongside a posted tweet, so we can later
+# check which of them actually predicted engagement.
+_CRITIC_AXES = ("score", "hook", "first_line_hook", "voice_match", "value",
+                "grounding", "predicted_engagement")
+
+
+def _slim_critic(verdict: dict[str, Any] | None, accepted: bool) -> dict[str, Any] | None:
+    """Keep just the numbers (no issues text) to pair with real engagement later."""
+    if not verdict:
+        return None
+    out = {k: verdict.get(k) for k in _CRITIC_AXES if verdict.get(k) is not None}
+    out["accepted"] = accepted
+    return out
+
+
 def log_critic(state: dict[str, Any], role: str, score: int, issues: list[str], attempt: int, accepted: bool) -> None:
     """Keep a rolling log of critic decisions for dashboard visibility."""
     state.setdefault("critic_log", []).insert(0, {
@@ -1253,6 +1268,7 @@ async def _gate_with_critic(
     """Run a generator, critique the output, regenerate up to MAX_ATTEMPTS if score < threshold."""
     best: Any = None
     best_score = -1
+    best_verdict: dict[str, Any] | None = None
     for attempt in range(1, CRITIC_MAX_ATTEMPTS + 1):
         candidate = await generator()
         if not candidate:
@@ -1281,13 +1297,16 @@ async def _gate_with_critic(
         )
         save_state(state)
         if accepted:
+            # Stash for the posting path to pair with real engagement later.
+            state["_last_critic"] = _slim_critic(verdict, True)
             return candidate
         # Track best-so-far in case all attempts fail
         if score > best_score:
-            best_score, best = score, candidate
+            best_score, best, best_verdict = score, candidate, verdict
     # Fall back to best of N rather than skip — better imperfect post than nothing
     if best is not None:
         logger.info(f"Critic[{role}]: no attempt cleared threshold, posting best (score={best_score})")
+        state["_last_critic"] = _slim_critic(best_verdict, False)
     return best
 
 
@@ -2598,6 +2617,9 @@ async def measure_own_tweet_velocity(page: Page, state: dict[str, Any]) -> None:
                 "replies": replies_n,
                 "reposts": reposts_n,
                 "checked_at": datetime.now(timezone.utc).isoformat(),
+                # The whole point: critic's prediction next to reality, so we can
+                # see which axes actually track engagement.
+                "critic": entry_match[0].get("critic"),
             })
             state["own_tweet_performance"] = state["own_tweet_performance"][:100]
             measured += 1
@@ -3022,6 +3044,8 @@ async def run_cycle(state: dict[str, Any]) -> None:
                         "title": t.get("angle", "")[:120],
                         "source_url": t.get("source_url", ""),
                         "created_at": datetime.now(timezone.utc).isoformat(),
+                        # Carried through to tweet_history when approved+posted.
+                        "critic": state.pop("_last_critic", None),
                     })
                     state["draft_queue"] = state["draft_queue"][:30]
                     save_state(state)
@@ -3056,6 +3080,8 @@ async def run_cycle(state: dict[str, Any]) -> None:
                             "news_link": d.get("source_url", ""),
                             "thread_length": len(d["thread"]),
                             "kind": "approved_draft",
+                            # Scored when it was drafted, not now — carry it over.
+                            "critic": d.get("critic"),
                         })
                         state["tweet_history"] = state["tweet_history"][:200]
                         # Mark posted (not hard-delete) so the cross-process draft_queue
@@ -3158,6 +3184,7 @@ async def run_cycle(state: dict[str, Any]) -> None:
                             "news_link": link,
                             "thread_length": len(thread),
                             "kind": kind,
+                            "critic": state.pop("_last_critic", None),
                         })
                         state["tweet_history"] = state["tweet_history"][:200]
 

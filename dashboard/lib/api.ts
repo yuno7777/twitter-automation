@@ -324,6 +324,26 @@ export function toggleEngagementPod(enabled: boolean) {
   });
 }
 
+// --- Critic calibration: did the critic's score predict real engagement? ---
+export interface CalibrationRow {
+  text: string;
+  posted_at: string;
+  likes: number;
+  replies: number;
+  reposts: number;
+  engagement: number;
+  critic: Record<string, number | boolean | null>;
+}
+export interface CriticCalibration {
+  sample_size: number;
+  with_engagement: number;
+  correlations: Record<string, number | null>;
+  rows: CalibrationRow[];
+}
+export function getCriticCalibration() {
+  return json<CriticCalibration>("/api/critic_calibration");
+}
+
 export interface OwnVelocityItem {
   url: string;
   text: string;

@@ -240,6 +240,57 @@ def engagement_pod_toggle(body: PodToggleBody) -> dict[str, Any]:
     return {"ok": True, "enabled": s["engagement_pod_enabled"]}
 
 
+@app.get("/api/critic_calibration")
+def critic_calibration() -> dict[str, Any]:
+    """Does the critic actually predict engagement? Pairs each measured tweet's
+    critic axes with its real likes/replies/reposts and correlates them.
+
+    Correlation is None when there isn't enough signal yet (fewer than 3 scored
+    tweets, or zero variance — e.g. every tweet got 0 likes). Better to show
+    nothing than fake precision.
+    """
+    import statistics
+
+    axes = ["score", "hook", "first_line_hook", "voice_match", "value",
+            "grounding", "predicted_engagement"]
+    rows: list[dict[str, Any]] = []
+    for p in read_state().get("own_tweet_performance", []):
+        c = p.get("critic")
+        if not c:
+            continue
+        rows.append({
+            "text": (p.get("text") or "")[:140],
+            "posted_at": p.get("posted_at"),
+            "likes": p.get("likes") or 0,
+            "replies": p.get("replies") or 0,
+            "reposts": p.get("reposts") or 0,
+            "engagement": (p.get("likes") or 0) + (p.get("replies") or 0) + (p.get("reposts") or 0),
+            "critic": c,
+        })
+
+    correlations: dict[str, Any] = {}
+    for a in axes:
+        pairs = [(float(r["critic"][a]), float(r["engagement"]))
+                 for r in rows if r["critic"].get(a) is not None]
+        if len(pairs) < 3:
+            correlations[a] = None
+            continue
+        try:
+            correlations[a] = round(
+                statistics.correlation([p[0] for p in pairs], [p[1] for p in pairs]), 3
+            )
+        except statistics.StatisticsError:
+            correlations[a] = None  # zero variance on one side
+
+    engaged = [r for r in rows if r["engagement"] > 0]
+    return {
+        "sample_size": len(rows),
+        "with_engagement": len(engaged),
+        "correlations": correlations,
+        "rows": rows[:50],
+    }
+
+
 @app.get("/api/own_velocity")
 def own_velocity() -> list[dict[str, Any]]:
     """Feature 4: Early-curve performance of our own recent tweets."""
